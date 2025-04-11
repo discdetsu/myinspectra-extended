@@ -7,17 +7,27 @@ export default function FileDropzone() {
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState<boolean | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setFiles(acceptedFiles);
-    setUploadSuccess(null); // Reset status
+    setUploadSuccess(null);
+    setProcessedImageUrl(null);
+    
+    // Create preview URL for the first file
+    if (acceptedFiles.length > 0) {
+      const file = acceptedFiles[0];
+      const objectUrl = URL.createObjectURL(file);
+      setPreviewUrl(objectUrl);
+    }
   }, []);
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
     noClick: true,
     noKeyboard: true,
-    multiple: false, // assuming one image at a time
+    multiple: false,
     accept: { "image/*": [] },
   });
 
@@ -62,11 +72,14 @@ export default function FileDropzone() {
         body: formData,
       });
 
-      const resultText = await response.text();
-      console.log("Upload response:", resultText);
-
-      setUploadSuccess(response.ok);
-      if (response.ok) setFiles([]);
+      if (response.ok) {
+        const blob = await response.blob();
+        const processedUrl = URL.createObjectURL(blob);
+        setProcessedImageUrl(processedUrl);
+        setUploadSuccess(true);
+      } else {
+        setUploadSuccess(false);
+      }
     } catch (error) {
       console.error("Upload failed:", error);
       setUploadSuccess(false);
@@ -77,55 +90,87 @@ export default function FileDropzone() {
 
   const removeFile = (fileName: string) => {
     setFiles((prev) => prev.filter((file) => file.name !== fileName));
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+    if (processedImageUrl) {
+      URL.revokeObjectURL(processedImageUrl);
+      setProcessedImageUrl(null);
+    }
+    setUploadSuccess(null);
   };
 
   return (
-    <div className="max-w-lg mx-auto">
-      <div
-        {...getRootProps()}
-        className={`
-          flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-2xl transition-all duration-200
-          ${
-            isDragActive
-              ? "border-blue-500 bg-blue-50"
-              : "border-gray-300 bg-white hover:bg-gray-50"
-          }
-        `}
-      >
-        <input {...getInputProps()} />
-        <UploadCloud className="h-10 w-10 text-gray-400 mb-2" />
-        <p className="text-gray-600 text-center">
-          {isDragActive
-            ? "Drop the files here ..."
-            : "Drag & drop files here, or click to select files"}
-        </p>
-        <button
-          type="button"
-          onClick={open}
-          className="mt-4 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700"
+    <div className="max-w-4xl mx-auto">
+      {!files.length && (
+        <div
+          {...getRootProps()}
+          className={`
+            flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-2xl transition-all duration-200
+            ${isDragActive ? "border-blue-500 bg-blue-50" : "border-gray-300 bg-white hover:bg-gray-50"}
+          `}
         >
-          Browse Files
-        </button>
-      </div>
+          <input {...getInputProps()} />
+          <UploadCloud className="h-10 w-10 text-gray-400 mb-2" />
+          <p className="text-gray-600 text-center">
+            {isDragActive ? "Drop the files here ..." : "Drag & drop files here, or click to select files"}
+          </p>
+          <button
+            type="button"
+            onClick={open}
+            className="mt-4 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700"
+          >
+            Browse Files
+          </button>
+        </div>
+      )}
 
       {files.length > 0 && (
         <>
-          <ul className="mt-4 space-y-2">
-            {files.map((file) => (
-              <li
-                key={file.name}
-                className="flex items-center justify-between p-3 bg-gray-100 rounded-xl"
-              >
-                <span className="text-sm text-gray-800">{file.name}</span>
-                <button
-                  onClick={() => removeFile(file.name)}
-                  className="text-gray-500 hover:text-red-500"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="mt-4 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Original Image Preview */}
+              {previewUrl && (
+                <div className="relative">
+                  <h3 className="text-lg font-semibold mb-2">Original Image</h3>
+                  <div className="relative">
+                    <img
+                      src={previewUrl}
+                      alt="Original"
+                      className="w-full h-auto rounded-xl"
+                    />
+                    <button
+                      onClick={() => removeFile(files[0].name)}
+                      className="absolute top-2 right-2 p-1 bg-white rounded-full shadow-md text-gray-500 hover:text-red-500"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Processed Image Preview */}
+              {processedImageUrl && (
+                <div className="relative">
+                  <h3 className="text-lg font-semibold mb-2">AI Processed Image</h3>
+                  <img
+                    src={processedImageUrl}
+                    alt="Processed"
+                    className="w-full h-auto rounded-xl"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* File Info */}
+            <div className="flex items-center justify-between p-3 bg-gray-100 rounded-xl">
+              <span className="text-sm text-gray-800">{files[0].name}</span>
+              <span className="text-xs text-gray-500">
+                {(files[0].size / (1024 * 1024)).toFixed(2)} MB
+              </span>
+            </div>
+          </div>
 
           <div className="mt-4 flex items-center space-x-3">
             <button
@@ -140,23 +185,23 @@ export default function FileDropzone() {
               {isUploading ? (
                 <span className="flex items-center">
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Uploading...
+                  Processing...
                 </span>
               ) : (
-                "Upload Files"
+                "Process Image"
               )}
             </button>
 
             {uploadSuccess === true && (
               <span className="flex items-center text-green-600">
                 <CheckCircle className="w-5 h-5 mr-1" />
-                Uploaded!
+                Processing Complete!
               </span>
             )}
             {uploadSuccess === false && (
               <span className="flex items-center text-red-600">
                 <XCircle className="w-5 h-5 mr-1" />
-                Failed to upload.
+                Processing failed.
               </span>
             )}
           </div>
