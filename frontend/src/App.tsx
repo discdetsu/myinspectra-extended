@@ -47,14 +47,14 @@ function App() {
   };
 
   return (
-    <div className="flex min-h-screen">
+    <div className="min-h-screen">
       <Sidebar
         onUpload={handleUpload}
         onHistory={handleHistory}
         onConsult={handleConsult}
       />
 
-      <div className="flex-1 flex flex-col">
+      <div className="ml-64 flex flex-col min-h-screen">
         <header className="bg-white shadow-sm">
           <div className="px-4 py-6 sm:px-6 lg:px-8">
             <h1 className="text-3xl font-bold tracking-tight text-gray-900">
