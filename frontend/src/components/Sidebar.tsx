@@ -84,7 +84,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onConsult,
 }) => {
   return (
-    <div className="flex flex-col justify-between h-screen bg-gray-900 w-64">
+    <div className="flex flex-col justify-between bg-gray-900 w-64">
       <div>
         <Logo />
         <div className="mt-6 px-2">
