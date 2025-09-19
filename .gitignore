@@ -180,3 +180,4 @@ mock_api/
 uv.lock
 .database
 deeplearning_api/
+backend/media/
