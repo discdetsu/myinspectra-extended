@@ -12,6 +12,12 @@ def heatmap_upload_path(instance, filename):
     disease_slug = instance.prediction.disease_name.lower().replace(' ', '_')
     return f'heatmaps/{case_id}/{disease_slug}_{filename}'
 
+def segment_upload_path(instance, filename):
+    """Generate upload path for segment images"""
+    case_id = instance.case_request.request_id
+    disease_slug = instance.class_name.lower().replace(' ', '_')
+    return f'segments/{case_id}/{disease_slug}_{filename}'
+
 
 class CXRModel(models.Model):
     """Store information about different AI models"""
@@ -116,3 +122,26 @@ class Heatmap(models.Model):
 
     def __str__(self):
         return f"{self.prediction.case_request.request_id}"
+
+
+class Segment(models.Model):
+    """Store segment images for UNet models"""
+    case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='segments')
+    class_name = models.CharField(max_length=100)
+    segment_image = models.ImageField(upload_to=segment_upload_path)
+
+    # Image metadata
+    width = models.IntegerField(null=True, blank=True)
+    height = models.IntegerField(null=True, blank=True)
+    file_size = models.BigIntegerField(null=True, blank=True, help_text="Size in bytes")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.case_request.request_id}"
+

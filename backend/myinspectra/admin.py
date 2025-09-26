@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap
+from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment  
 
 # Configure admin site headers and titles
 admin.site.site_header = "MyInspectra Admin"
@@ -103,3 +103,15 @@ class HeatmapAdmin(admin.ModelAdmin):
         return "No heatmap"
     heatmap_url.short_description = 'Heatmap URL'
 
+@admin.register(Segment)
+class SegmentAdmin(admin.ModelAdmin):
+    list_display = ['case_request', 'segment_image', 'class_name', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['class_name', 'created_at', 'case_request__model_version']
+    search_fields = ['case_request__request_id', 'class_name']
+    readonly_fields = ['created_at', 'updated_at', 'segment_image_url']
+
+    def segment_image_url(self, obj):
+        if obj.segment_image:
+            return obj.segment_image.url
+        return "No segment image"
+    segment_image_url.short_description = 'Segment Image URL'

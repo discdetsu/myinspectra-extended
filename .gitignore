@@ -181,3 +181,4 @@ uv.lock
 .database
 deeplearning_api/
 backend/media/
+backend/myinspectra/heatmap_orchestrate/

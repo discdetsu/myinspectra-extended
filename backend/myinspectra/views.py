@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
-from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap
+from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment
 from PIL import Image
 import requests
 import base64
@@ -56,7 +56,8 @@ def upload_test(request):
                 uploaded_file.seek(0)
 
                 # Call prediction API with multipart/form-data
-                cxr_api_url = "http://0.0.0.0:50000/predict"
+                abnormality_url = "http://0.0.0.0:50000/predict"
+                lung_segmentation_url = "http://0.0.0.0:50004/predict"
 
                 # Prepare multipart form data
                 files = {
@@ -66,13 +67,23 @@ def upload_test(request):
                     'request_id': str(case_request.request_id)
                 }
 
-                response = requests.post(cxr_api_url, files=files, data=data, timeout=30)
-                response.raise_for_status()
-                cxr_result = response.json()
+                ab_response = requests.post(abnormality_url, files=files, data=data, timeout=30)
+                ab_response.raise_for_status()
+                ab_json = ab_response.json()
+
+                # Reset file pointer for second request
+                uploaded_file.seek(0)
+                files = {
+                    'file': (uploaded_file.name, uploaded_file, uploaded_file.content_type)
+                }
+
+                lung_response = requests.post(lung_segmentation_url, files=files, data=data, timeout=30)
+                lung_response.raise_for_status()
+                lung_json = lung_response.json()
 
                 # Extract and store prediction results
-                if 'result' in cxr_result:
-                    result_data = cxr_result['result']
+                if 'result' in ab_json:
+                    result_data = ab_json['result']
 
                     for disease, values in result_data.items():
                         # Create or update Prediction record for each disease
@@ -123,10 +134,58 @@ def upload_test(request):
                                 # Log heatmap error but don't fail the whole prediction
                                 print(f"Error saving heatmap for {disease}: {heatmap_error}")
 
-                    # Mark prediction as successful
-                    case_request.success_process = True
-                    case_request.save()
-                    prediction_success = True
+                    
+                if 'result' in lung_json:
+                    lung_result_data = lung_json['result']
+
+                    for lung_class, segment_b64 in lung_result_data['heatmap'].items():
+                        if segment_b64:
+                            try:
+                                # Decode base64 to image
+                                segment_data = base64.b64decode(segment_b64)
+                                segment_image = Image.open(io.BytesIO(segment_data))
+
+                                # Create filename for segment
+                                filename = f"segment_{lung_class.lower().replace(' ', '_')}.png"
+
+                                # Convert PIL image to file-like object
+                                img_buffer = io.BytesIO()
+                                segment_image.save(img_buffer, format='PNG')
+                                img_buffer.seek(0)
+
+                                # Create or update Segment record
+                                segment, _ = Segment.objects.update_or_create(
+                                    case_request=case_request,
+                                    class_name=lung_class,
+                                    defaults={
+                                        'width': segment_image.width,
+                                        'height': segment_image.height,
+                                        'file_size': len(segment_data),
+                                    }
+                                )
+
+                                # Save the image file
+                                segment.segment_image.save(
+                                    filename,
+                                    ContentFile(img_buffer.getvalue()),
+                                    save=True
+                                )
+
+                            except Exception as segment_error:
+                                # Log segment error but don't fail the whole prediction
+                                print(f"Error saving segment for {lung_class}: {segment_error}")
+
+
+                # Heatmap orchestration
+                prediction_data = Prediction.objects.filter(case_request=case_request)
+                heatmap_data = Heatmap.objects.filter(prediction__in=prediction_data)
+                print(heatmap_data.values())
+                
+
+                # Mark prediction as successful
+                case_request.success_process = True
+                case_request.save()
+                prediction_success = True
 
             except Exception as e:
                 prediction_error = str(e)
