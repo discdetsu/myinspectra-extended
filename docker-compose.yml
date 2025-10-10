@@ -20,10 +20,8 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:password@db:5432/myinspectra_db
-      - MINIO_ENDPOINT_URL=http://minio:9000
     depends_on:
       - db
-      - minio
     networks:
       - backend
 
