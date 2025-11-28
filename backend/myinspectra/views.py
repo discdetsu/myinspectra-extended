@@ -1,30 +1,118 @@
 from django.shortcuts import render
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
-from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment
-from PIL import Image
+import io
+import concurrent.futures
+from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile
+from .heatmap_orchestrate.main import HeatmapOverlayProcessor
+from .heatmap_orchestrate.config import HeatmapConfig, InspectraImageOverlayConfig
+import os
+import tempfile
 import requests
 import base64
-import io
+from PIL import Image
+
+def call_prediction_api(url, file_data, filename, content_type, data):
+    files = {'file': (filename, file_data, content_type)}
+    try:
+        response = requests.post(url, files=files, data=data, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error calling {url}: {e}")
+        return {}
+
+def save_heatmap(prediction, heatmap_b64):
+    if not heatmap_b64:
+        return
+    try:
+        heatmap_data = base64.b64decode(heatmap_b64)
+        heatmap_image = Image.open(io.BytesIO(heatmap_data))
+        
+        img_buffer = io.BytesIO()
+        heatmap_image.save(img_buffer, format='PNG')
+        img_buffer.seek(0)
+        
+        heatmap, _ = Heatmap.objects.update_or_create(
+            prediction=prediction,
+            defaults={
+                'width': heatmap_image.width,
+                'height': heatmap_image.height,
+                'file_size': len(heatmap_data),
+            }
+        )
+        heatmap.heatmap_image.save("heatmap.png", ContentFile(img_buffer.getvalue()), save=True)
+    except Exception as e:
+        print(f"Error saving heatmap: {e}")
+
+def process_prediction_result(case_request, result_data):
+    if not result_data:
+        return
+    for disease, values in result_data.items():
+        prediction, _ = Prediction.objects.update_or_create(
+            case_request=case_request,
+            disease_name=disease,
+            defaults={
+                'prediction_value': values.get('prediction', 0.0),
+                'balanced_score': values.get('balanced_score', 0.0),
+                'thresholded_percentage': values.get('thresholded', '0%'),
+            }
+        )
+        save_heatmap(prediction, values.get('heatmap', ''))
+
+def process_segmentation_result(case_request, result_data):
+    if not result_data or 'heatmap' not in result_data:
+        return
+
+    for class_name, segment_b64 in result_data['heatmap'].items():
+        if not segment_b64:
+            continue
+        try:
+            segment_data = base64.b64decode(segment_b64)
+            segment_image = Image.open(io.BytesIO(segment_data))
+            
+            img_buffer = io.BytesIO()
+            segment_image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            
+            segment, _ = Segment.objects.update_or_create(
+                case_request=case_request,
+                class_name=class_name,
+                defaults={
+                    'width': segment_image.width,
+                    'height': segment_image.height,
+                    'file_size': len(segment_data),
+                }
+            )
+            segment.segment_image.save("segment.png", ContentFile(img_buffer.getvalue()), save=True)
+        except Exception as e:
+            print(f"Error saving segment for {class_name}: {e}")
+
 
 def upload_test(request):
     if request.method == 'POST':
         if 'image' in request.FILES:
             uploaded_file = request.FILES['image']
-            model_version = request.POST.get('model_version')
+            profile_id = request.POST.get('profile_id')
+            profile = None
+            
+            if profile_id:
+                try:
+                    profile = PredictionProfile.objects.get(id=profile_id)
+                except Exception:
+                    pass
+            
+            # Fallback to default profile if none selected (or create one if needed)
+            if not profile:
+                 # Try to find a default profile or the first active one
+                profile = PredictionProfile.objects.filter(is_active=True).first()
 
-            # Get model version first
-            try:
-                model_version = CXRModel.objects.get(version=model_version)
-            except Exception:
-                model_version = None
+            if not profile:
+                return HttpResponse("<h2>Error: No active Prediction Profile found. Please configure one in Admin.</h2>")
 
-            if not model_version:
-                return HttpResponse("<h2>Error: Model version not found</h2>")
-
-            # Create CaseRequest first
+            # Create CaseRequest
             case_request = CaseRequest.objects.create(
-                model_version=model_version,
+                profile=profile,
             )
 
             # Create RawImage instance with the case_request
@@ -52,135 +140,152 @@ def upload_test(request):
             prediction_error = None
 
             try:
-                # Reset file pointer to beginning
+                # Read file content once
                 uploaded_file.seek(0)
+                file_data = uploaded_file.read()
+                
+                # Construct URLs dynamically from the profile
+                urls = {}
+                for model in profile.cxr_models.filter(is_active=True):
+                    urls[model.service_type] = model.api_url
 
-                # Call prediction API with multipart/form-data
-                abnormality_url = "http://0.0.0.0:50000/predict"
-                lung_segmentation_url = "http://0.0.0.0:50004/predict"
+                data = {'request_id': str(case_request.request_id)}
+                
+                results = {}
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future_to_url = {
+                        executor.submit(
+                            call_prediction_api, 
+                            url, 
+                            file_data, 
+                            uploaded_file.name, 
+                            uploaded_file.content_type, 
+                            data
+                        ): name 
+                        for name, url in urls.items()
+                    }
+                    
+                    for future in concurrent.futures.as_completed(future_to_url):
+                        name = future_to_url[future]
+                        try:
+                            results[name] = future.result()
+                        except Exception as exc:
+                            print(f'{name} generated an exception: {exc}')
 
-                # Prepare multipart form data
-                files = {
-                    'file': (uploaded_file.name, uploaded_file, uploaded_file.content_type)
-                }
-                data = {
-                    'request_id': str(case_request.request_id)
-                }
+                # Process results
+                if 'result' in results.get('abnormality', {}):
+                    process_prediction_result(case_request, results['abnormality']['result'])
+                
+                if 'result' in results.get('tuberculosis', {}):
+                    process_prediction_result(case_request, results['tuberculosis']['result'])
+                    
+                if 'result' in results.get('pneumothorax', {}):
+                    process_prediction_result(case_request, results['pneumothorax']['result'])
+                
+                if 'result' in results.get('lung_segmentation', {}):
+                    process_segmentation_result(case_request, results['lung_segmentation']['result'])
+                    
+                if 'result' in results.get('pleural_effusion_segmentation', {}):
+                    process_segmentation_result(case_request, results['pleural_effusion_segmentation']['result'])
+                    
+                if 'result' in results.get('pneumothorax_segmentation', {}):
+                    process_segmentation_result(case_request, results['pneumothorax_segmentation']['result'])
 
-                ab_response = requests.post(abnormality_url, files=files, data=data, timeout=30)
-                ab_response.raise_for_status()
-                ab_json = ab_response.json()
 
-                # Reset file pointer for second request
-                uploaded_file.seek(0)
-                files = {
-                    'file': (uploaded_file.name, uploaded_file, uploaded_file.content_type)
-                }
+                # Heatmap orchestration (Overlay)
+                try:
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'config.yml')
+                    overlay_config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'overlay_config.yml')
 
-                lung_response = requests.post(lung_segmentation_url, files=files, data=data, timeout=30)
-                lung_response.raise_for_status()
-                lung_json = lung_response.json()
+                    custom_config = HeatmapConfig(config_path)
+                    custom_overlay_config = InspectraImageOverlayConfig(overlay_config_path)
+                    processor = HeatmapOverlayProcessor(config=custom_config, overlay_config=custom_overlay_config)
 
-                # Extract and store prediction results
-                if 'result' in ab_json:
-                    result_data = ab_json['result']
+                    heatmap_paths = {}
+                    confidence_scores = {}
+                    
+                    # Collect heatmaps and scores from Predictions
+                    predictions = Prediction.objects.filter(case_request=case_request)
+                    for pred in predictions:
+                        if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                            heatmap_paths[pred.disease_name] = pred.heatmap.heatmap_image.path
+                            confidence_scores[pred.disease_name] = pred.balanced_score
 
-                    for disease, values in result_data.items():
-                        # Create or update Prediction record for each disease
-                        prediction, _ = Prediction.objects.update_or_create(
-                            case_request=case_request,
-                            disease_name=disease,
-                            defaults={
-                                'prediction_value': values.get('prediction', 0.0),
-                                'balanced_score': values.get('balanced_score', 0.0),
-                                'thresholded_percentage': values.get('thresholded', '0%'),
-                            }
+                    # Collect segments
+                    segments = Segment.objects.filter(case_request=case_request)
+                    lung_mask_path = None
+                    fallback_heatmap_paths = {}
+                    
+                    for seg in segments:
+
+                        if seg.class_name == 'Lung':
+                            lung_mask_path = seg.segment_image.path
+
+                        elif seg.class_name == 'Lung Convex':
+                            lung_convex_mask_path = seg.segment_image.path
+
+                        elif seg.segment_image:
+                            # Special handling for Pneumothorax
+                            if seg.class_name == 'Pneumothorax':
+                                # Use segment as primary
+                                heatmap_paths['Pneumothorax'] = seg.segment_image.path
+                                
+                                # If we already had a heatmap from prediction (which we collected above),
+                                # move it to fallback
+                                pred = predictions.filter(disease_name='Pneumothorax').first()
+                                if pred and hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                                    fallback_heatmap_paths['Pneumothorax'] = pred.heatmap.heatmap_image.path
+
+                            else:
+                                # For other segments, treat as usual (maybe overwrite or add)
+                                heatmap_paths[seg.class_name + ' Segmentation'] = seg.segment_image.path
+                                pred = predictions.filter(disease_name=seg.class_name).first()
+                                if pred:
+                                    confidence_scores[seg.class_name + ' Segmentation'] = pred.balanced_score
+
+                    if lung_mask_path and raw_image.image:
+                        # We need a temporary path for output
+                        # Or we can save directly to a temp file and then read it
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                            output_path = tmp_file.name
+                        
+                        # Fallback paths are now populated in the loop above
+
+
+                        result = processor.process_from_files(
+                            heatmap_paths=heatmap_paths,
+                            lung_mask_path=lung_mask_path,
+                            raw_image_path=raw_image.image.path,
+                            scores=confidence_scores,
+                            output_path=output_path,
+                            mode="color",
+                            fallback_heatmap_paths=fallback_heatmap_paths,
+                            save_processed_heatmaps=False # We don't need intermediate files stored permanently by processor
                         )
 
-                        # Save heatmap image if available
-                        heatmap_b64 = values.get('heatmap', '')
-                        if heatmap_b64:
-                            try:
-                                # Decode base64 to image
-                                heatmap_data = base64.b64decode(heatmap_b64)
-                                heatmap_image = Image.open(io.BytesIO(heatmap_data))
+                        if result is not None and os.path.exists(output_path):
+                            # Save to OverlayHeatmap model
+                            with open(output_path, 'rb') as f:
+                                overlay_content = f.read()
+                                
+                            overlay, _ = OverlayHeatmap.objects.update_or_create(
+                                case_request=case_request,
+                                defaults={
+                                    'width': raw_image.width, # Assuming same size
+                                    'height': raw_image.height,
+                                    'file_size': len(overlay_content)
+                                }
+                            )
+                            overlay.overlay_image.save("overlay_heatmap.png", ContentFile(overlay_content), save=True)
+                            
+                            # Clean up temp file
+                            os.remove(output_path)
 
-                                # Create filename for heatmap
-                                filename = f"heatmap_{disease.lower().replace(' ', '_')}.png"
-
-                                # Convert PIL image to file-like object
-                                img_buffer = io.BytesIO()
-                                heatmap_image.save(img_buffer, format='PNG')
-                                img_buffer.seek(0)
-
-                                # Create or update Heatmap record
-                                heatmap, _ = Heatmap.objects.update_or_create(
-                                    prediction=prediction,
-                                    defaults={
-                                        'width': heatmap_image.width,
-                                        'height': heatmap_image.height,
-                                        'file_size': len(heatmap_data),
-                                    }
-                                )
-
-                                # Save the image file
-                                heatmap.heatmap_image.save(
-                                    filename,
-                                    ContentFile(img_buffer.getvalue()),
-                                    save=True
-                                )
-
-                            except Exception as heatmap_error:
-                                # Log heatmap error but don't fail the whole prediction
-                                print(f"Error saving heatmap for {disease}: {heatmap_error}")
-
-                    
-                if 'result' in lung_json:
-                    lung_result_data = lung_json['result']
-
-                    for lung_class, segment_b64 in lung_result_data['heatmap'].items():
-                        if segment_b64:
-                            try:
-                                # Decode base64 to image
-                                segment_data = base64.b64decode(segment_b64)
-                                segment_image = Image.open(io.BytesIO(segment_data))
-
-                                # Create filename for segment
-                                filename = f"segment_{lung_class.lower().replace(' ', '_')}.png"
-
-                                # Convert PIL image to file-like object
-                                img_buffer = io.BytesIO()
-                                segment_image.save(img_buffer, format='PNG')
-                                img_buffer.seek(0)
-
-                                # Create or update Segment record
-                                segment, _ = Segment.objects.update_or_create(
-                                    case_request=case_request,
-                                    class_name=lung_class,
-                                    defaults={
-                                        'width': segment_image.width,
-                                        'height': segment_image.height,
-                                        'file_size': len(segment_data),
-                                    }
-                                )
-
-                                # Save the image file
-                                segment.segment_image.save(
-                                    filename,
-                                    ContentFile(img_buffer.getvalue()),
-                                    save=True
-                                )
-
-                            except Exception as segment_error:
-                                # Log segment error but don't fail the whole prediction
-                                print(f"Error saving segment for {lung_class}: {segment_error}")
-
-
-                # Heatmap orchestration
-                prediction_data = Prediction.objects.filter(case_request=case_request)
-                heatmap_data = Heatmap.objects.filter(prediction__in=prediction_data)
-                print(heatmap_data.values())
-                
+                except Exception as e:
+                    print(f"Error in overlay generation: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 # Mark prediction as successful
                 case_request.success_process = True
@@ -225,4 +330,5 @@ def upload_test(request):
             <a href="/admin/">View in Admin</a>
             """)
 
-    return render(request, 'upload_test.html')
+    profiles = PredictionProfile.objects.filter(is_active=True)
+    return render(request, 'upload_test.html', {'profiles': profiles})

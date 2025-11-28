@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment  
+from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile  
 
 # Configure admin site headers and titles
 admin.site.site_header = "MyInspectra Admin"
@@ -28,15 +28,23 @@ class HeatmapInline(admin.StackedInline):
 
 @admin.register(CXRModel)
 class CXRModelAdmin(admin.ModelAdmin):
-    list_display = ['name', 'version', 'is_active', 'created_at']
-    list_filter = ['is_active', 'version']
+    list_display = ['name', 'version', 'service_type', 'is_active', 'created_at']
+    list_filter = ['is_active', 'version', 'service_type']
     search_fields = ['name', 'version']
+
+
+@admin.register(PredictionProfile)
+class PredictionProfileAdmin(admin.ModelAdmin):
+    list_display = ['name', 'is_active', 'created_at']
+    list_filter = ['is_active']
+    search_fields = ['name']
+    filter_horizontal = ['cxr_models']
 
 
 @admin.register(CaseRequest)
 class CaseRequestAdmin(admin.ModelAdmin):
-    list_display = ['request_id', 'model_version', 'created_at', 'is_image_uploaded', 'is_prediction_generated', 'is_success_response']
-    list_filter = ['model_version', 'created_at']
+    list_display = ['request_id', 'profile', 'created_at', 'is_image_uploaded', 'is_prediction_generated', 'is_success_response']
+    list_filter = ['profile', 'created_at']
     search_fields = ['request_id']
     readonly_fields = ['created_at', 'updated_at']
     inlines = [PredictionInline]
@@ -115,3 +123,18 @@ class SegmentAdmin(admin.ModelAdmin):
             return obj.segment_image.url
         return "No segment image"
     segment_image_url.short_description = 'Segment Image URL'
+
+
+@admin.register(OverlayHeatmap)
+class OverlayHeatmapAdmin(admin.ModelAdmin):
+    list_display = ['case_request', 'overlay_image', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['case_request__request_id']
+    readonly_fields = ['created_at', 'updated_at', 'overlay_image_url']
+
+    def overlay_image_url(self, obj):
+        if obj.overlay_image:
+            return obj.overlay_image.url
+        return "No overlay image"
+    overlay_image_url.short_description = 'Overlay Image URL'
+

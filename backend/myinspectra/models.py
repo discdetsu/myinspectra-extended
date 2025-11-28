@@ -19,29 +19,61 @@ def segment_upload_path(instance, filename):
     return f'segments/{case_id}/{disease_slug}_{filename}'
 
 
+
+def overlay_heatmap_upload_path(instance, filename):
+    """Generate upload path for overlay heatmap images"""
+    case_id = instance.case_request.request_id
+    return f'overlay_heatmaps/{case_id}/{filename}'
+
+
 class CXRModel(models.Model):
     """Store information about different AI models"""
 
+    SERVICE_CHOICES = [
+        ('abnormality', 'Abnormality'),
+        ('tuberculosis', 'Tuberculosis'),
+        ('pneumothorax', 'Pneumothorax'),
+        ('lung_segmentation', 'Lung Segmentation'),
+        ('pleural_effusion_segmentation', 'Pleural Effusion Segmentation'),
+        ('pneumothorax_segmentation', 'Pneumothorax Segmentation'),
+    ]
+
     name = models.CharField(max_length=100)
     version = models.CharField(max_length=20)
+    service_type = models.CharField(max_length=50, choices=SERVICE_CHOICES, default='abnormality')
+    api_url = models.URLField(max_length=200, help_text="Full API URL e.g., http://0.0.0.0:50000/predict", default="http://0.0.0.0:50000/predict")
     description = models.TextField(blank=True)
-    model_file_path = models.CharField(max_length=500, help_text="Path to model weights")
-    confidence_stat_file_path = models.CharField(max_length=500, help_text="Path to confidence statistics")
+    model_file_path = models.CharField(max_length=500, help_text="Path to model weights", blank=True)
+    confidence_stat_file_path = models.CharField(max_length=500, help_text="Path to confidence statistics", blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
-        unique_together = ['name', 'version']
+        unique_together = ['name', 'version', 'service_type']
     
     def __str__(self):
-        return f"{self.name} {self.version}"
+        return f"{self.get_service_type_display()} - {self.name} ({self.version})"
+
+
+class PredictionProfile(models.Model):
+    """Group a set of models to be used for a prediction request"""
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True)
+    cxr_models = models.ManyToManyField(CXRModel, related_name='profiles')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
 
 
 class CaseRequest(models.Model):
     """Store case request data for X-ray analysis"""
 
     request_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
-    model_version = models.ForeignKey(CXRModel, on_delete=models.CASCADE)
+    profile = models.ForeignKey(PredictionProfile, on_delete=models.SET_NULL, null=True, blank=True)
+    model_version = models.ForeignKey(CXRModel, on_delete=models.SET_NULL, null=True, blank=True, help_text="Legacy field, use profile instead")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -142,6 +174,26 @@ class Segment(models.Model):
     class Meta:
         ordering = ['-created_at']
     
+    def __str__(self):
+        return f"{self.case_request.request_id}"
+
+
+class OverlayHeatmap(models.Model):
+    """Store overlay heatmap images (aggregated from heatmaps and segments)"""
+    case_request = models.OneToOneField(CaseRequest, on_delete=models.CASCADE, related_name='overlay_heatmap')
+    overlay_image = models.ImageField(upload_to=overlay_heatmap_upload_path)
+    
+    # Image metadata
+    width = models.IntegerField(null=True, blank=True)
+    height = models.IntegerField(null=True, blank=True)
+    file_size = models.BigIntegerField(null=True, blank=True, help_text="Size in bytes")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
     def __str__(self):
         return f"{self.case_request.request_id}"
 
