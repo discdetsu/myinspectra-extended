@@ -18,13 +18,13 @@ load_dotenv(env_path)
 
 # Define the models and versions
 models_data = [
-    ('abnormality', os.getenv('ABNORMALITY_V3_VERSION', '3.5.1'), os.getenv('ABNORMALITY_V3_URL', 'http://0.0.0.0:50000/predict')),
-    ('abnormality', os.getenv('ABNORMALITY_V4_VERSION', '4.5.0'), os.getenv('ABNORMALITY_V4_URL', 'http://0.0.0.0:50000/predict')),
+    ('abnormality', os.getenv('ABNORMALITY_V3_VERSION', '3.5.1'), os.getenv('ABNORMALITY_V3_URL', 'http://0.0.0.0:50035/predict')),
+    ('abnormality', os.getenv('ABNORMALITY_V4_VERSION', '4.5.0'), os.getenv('ABNORMALITY_V4_URL', 'http://0.0.0.0:50045/predict')),
     ('tuberculosis', os.getenv('TUBERCULOSIS_VERSION', '2.0.3'), os.getenv('TUBERCULOSIS_URL', 'http://0.0.0.0:50001/predict')),
-    ('pneumothorax', os.getenv('PNEUMOTHORAX_VERSION', '2.0.3'), os.getenv('PNEUMOTHORAX_URL', 'http://0.0.0.0:50013/predict')),
-    ('pleural_effusion_segmentation', os.getenv('PLEURAL_EFFUSION_SEG_VERSION', '1.1.4'), os.getenv('PLEURAL_EFFUSION_SEG_URL', 'http://0.0.0.0:50012/predict')),
+    ('pneumothorax', os.getenv('PNEUMOTHORAX_VERSION', '2.0.3'), os.getenv('PNEUMOTHORAX_URL', 'http://0.0.0.0:50002/predict')),
+    ('pleural_effusion_segmentation', os.getenv('PLEURAL_EFFUSION_SEG_VERSION', '1.1.4'), os.getenv('PLEURAL_EFFUSION_SEG_URL', 'http://0.0.0.0:50003/predict')),
     ('lung_segmentation', os.getenv('LUNG_SEG_VERSION', '2.2.0'), os.getenv('LUNG_SEG_URL', 'http://0.0.0.0:50004/predict')),
-    ('pneumothorax_segmentation', os.getenv('PNEUMOTHORAX_SEG_VERSION', '1.1.3'), os.getenv('PNEUMOTHORAX_SEG_URL', 'http://0.0.0.0:50014/predict')),
+    ('pneumothorax_segmentation', os.getenv('PNEUMOTHORAX_SEG_VERSION', '1.1.3'), os.getenv('PNEUMOTHORAX_SEG_URL', 'http://0.0.0.0:50005/predict')),
 ]
 
 created_models = {}
@@ -42,8 +42,8 @@ for service_type, version, url in models_data:
 
 # Create Profiles
 profiles_data = [
-    ("Standard Profile (Abnormality v3.5.1)", "3.5.1"),
-    ("New Abnormality Profile (Abnormality v4.5.0)", "4.5.0"),
+    ("Abnormality v3.5.1", "3.5.1"),
+    ("Abnormality v4.5.0", "4.5.0"),
 ]
 
 print("\nCreating PredictionProfiles...")

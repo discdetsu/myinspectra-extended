@@ -43,8 +43,8 @@ class PredictionProfileAdmin(admin.ModelAdmin):
 
 @admin.register(CaseRequest)
 class CaseRequestAdmin(admin.ModelAdmin):
-    list_display = ['request_id', 'profile', 'created_at', 'is_image_uploaded', 'is_prediction_generated', 'is_success_response']
-    list_filter = ['profile', 'created_at']
+    list_display = ['request_id', 'created_at', 'is_image_uploaded', 'is_prediction_generated', 'is_success_response']
+    list_filter = ['created_at']
     search_fields = ['request_id']
     readonly_fields = ['created_at', 'updated_at']
     inlines = [PredictionInline]
@@ -81,8 +81,8 @@ class RawImageAdmin(admin.ModelAdmin):
 
 @admin.register(Prediction)
 class PredictionAdmin(admin.ModelAdmin):
-    list_display = ['case_request', 'disease_name', 'prediction_value', 'balanced_score', 'thresholded_percentage', 'created_at']
-    list_filter = ['disease_name', 'created_at', 'case_request__model_version']
+    list_display = ['case_request', 'disease_name', 'model_version', 'prediction_value', 'balanced_score', 'thresholded_percentage', 'created_at']
+    list_filter = ['disease_name', 'model_version', 'created_at']
     search_fields = ['case_request__request_id', 'disease_name']
     readonly_fields = ['created_at', 'updated_at']
     inlines = [HeatmapInline]
@@ -90,8 +90,8 @@ class PredictionAdmin(admin.ModelAdmin):
 
 @admin.register(Heatmap)
 class HeatmapAdmin(admin.ModelAdmin):
-    list_display = ['prediction', 'heatmap_image','get_disease_name', 'get_case_request', 'width', 'height', 'file_size', 'created_at']
-    list_filter = ['prediction__disease_name', 'created_at']
+    list_display = ['prediction', 'heatmap_image','get_disease_name', 'get_model_version', 'get_case_request', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['prediction__disease_name', 'prediction__model_version', 'created_at']
     search_fields = ['prediction__case_request__request_id', 'prediction__disease_name']
     readonly_fields = ['created_at', 'updated_at', 'heatmap_url']
 
@@ -99,6 +99,11 @@ class HeatmapAdmin(admin.ModelAdmin):
         return obj.prediction.disease_name
     get_disease_name.short_description = 'Disease'
     get_disease_name.admin_order_field = 'prediction__disease_name'
+
+    def get_model_version(self, obj):
+        return obj.prediction.model_version
+    get_model_version.short_description = 'Version'
+    get_model_version.admin_order_field = 'prediction__model_version'
 
     def get_case_request(self, obj):
         return obj.prediction.case_request.request_id
@@ -113,8 +118,8 @@ class HeatmapAdmin(admin.ModelAdmin):
 
 @admin.register(Segment)
 class SegmentAdmin(admin.ModelAdmin):
-    list_display = ['case_request', 'segment_image', 'class_name', 'width', 'height', 'file_size', 'created_at']
-    list_filter = ['class_name', 'created_at', 'case_request__model_version']
+    list_display = ['case_request', 'segment_image', 'class_name', 'model_version', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['class_name', 'model_version', 'created_at']
     search_fields = ['case_request__request_id', 'class_name']
     readonly_fields = ['created_at', 'updated_at', 'segment_image_url']
 
@@ -127,8 +132,8 @@ class SegmentAdmin(admin.ModelAdmin):
 
 @admin.register(OverlayHeatmap)
 class OverlayHeatmapAdmin(admin.ModelAdmin):
-    list_display = ['case_request', 'overlay_image', 'width', 'height', 'file_size', 'created_at']
-    list_filter = ['created_at']
+    list_display = ['case_request', 'version', 'overlay_image', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['version', 'created_at']
     search_fields = ['case_request__request_id']
     readonly_fields = ['created_at', 'updated_at', 'overlay_image_url']
 

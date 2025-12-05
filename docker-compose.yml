@@ -12,18 +12,114 @@ services:
   #   networks:
   #     - backend
 
-  # backend:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "8000:8000"
-  #   environment:
-  #     - DATABASE_URL=postgresql://postgres:password@db:5432/myinspectra_db
-  #   depends_on:
-  #     - db
-  #   networks:
-  #     - backend
+  backend:
+    container_name: myinspectra_django
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    networks:
+      - backend
+    environment:
+      - DB_HOST=db
+      - DB_NAME=myinspectra_db
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_PORT=5432
+
+  abnormality_v3:
+    image: abnormality:3.5.1
+    container_name: abnormality_v3
+    build: ./deeplearning_api/abnormality_v3.5.1
+    ports:
+      - "${ABNORMALITY_V3_PORT}:${ABNORMALITY_V3_PORT}"
+    environment:
+      - PORT=${ABNORMALITY_V3_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  abnormality_v4:
+    image: abnormality:4.5.0
+    container_name: abnormality_v4
+    build: ./deeplearning_api/abnormality_v4.5.0
+    ports:
+      - "${ABNORMALITY_V4_PORT}:${ABNORMALITY_V4_PORT}"
+    environment:
+      - PORT=${ABNORMALITY_V4_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  tuberculosis:
+    image: tuberculosis:2.0.3
+    container_name: tuberculosis
+    build: ./deeplearning_api/tuberculosis
+    ports:
+      - "${TUBERCULOSIS_PORT}:${TUBERCULOSIS_PORT}"
+    environment:
+      - PORT=${TUBERCULOSIS_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  pneumothorax:
+    image: pneumothorax:2.0.3
+    container_name: pneumothorax
+    build: ./deeplearning_api/pneumothorax
+    ports:
+      - "${PNEUMOTHORAX_PORT}:${PNEUMOTHORAX_PORT}"
+    environment:
+      - PORT=${PNEUMOTHORAX_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  pleural_effusion_segmentation:
+    image: pleural_effusion_segmentation:1.1.4
+    container_name: pleural_effusion_segmentation
+    build: ./deeplearning_api/pleural_effusion_segmentation
+    ports:
+      - "${PLEURAL_EFFUSION_SEG_PORT}:${PLEURAL_EFFUSION_SEG_PORT}"
+    environment:
+      - PORT=${PLEURAL_EFFUSION_SEG_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  lung_segmentation:
+    image: lung_segmentation:2.2.0
+    container_name: lung_segmentation
+    build: ./deeplearning_api/lung_segmentation
+    ports:
+      - "${LUNG_SEG_PORT}:${LUNG_SEG_PORT}"
+    environment:
+      - PORT=${LUNG_SEG_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  pneumothorax_segmentation:
+    image: pneumothorax_segmentation:1.1.3
+    container_name: pneumothorax_segmentation
+    build: ./deeplearning_api/pneumothorax_segmentation
+    ports:
+      - "${PNEUMOTHORAX_SEG_PORT}:${PNEUMOTHORAX_SEG_PORT}"
+    environment:
+      - PORT=${PNEUMOTHORAX_SEG_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
 
   db:
     image: postgres:18
@@ -39,7 +135,38 @@ services:
     networks:
       - backend
 
+  minio:
+    image: minio/minio
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - backend
+
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+    entrypoint: >
+      /bin/sh -c " until (/usr/bin/mc alias set myminio http://minio:9000 \${MINIO_ROOT_USER} \${MINIO_ROOT_PASSWORD}); do echo '...waiting...' && sleep 1; done; /usr/bin/mc mb myminio/\${MINIO_BUCKET_NAME} || echo 'Bucket already exists'; /usr/bin/mc anonymous set public myminio/\${MINIO_BUCKET_NAME}; exit 0; "
+    networks:
+      - backend
+
+volumes:
+  minio_data:
+
+
 networks:
   backend:
     driver: bridge
-

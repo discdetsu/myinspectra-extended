@@ -12,6 +12,10 @@ import requests
 import base64
 from PIL import Image
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def call_prediction_api(url, file_data, filename, content_type, data):
     files = {'file': (filename, file_data, content_type)}
     try:
@@ -19,8 +23,8 @@ def call_prediction_api(url, file_data, filename, content_type, data):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error calling {url}: {e}")
-        return {}
+        logger.error(f"Error calling {url}: {e}")
+        return {'error': str(e)}
 
 def save_heatmap(prediction, heatmap_b64):
     if not heatmap_b64:
@@ -43,15 +47,16 @@ def save_heatmap(prediction, heatmap_b64):
         )
         heatmap.heatmap_image.save("heatmap.png", ContentFile(img_buffer.getvalue()), save=True)
     except Exception as e:
-        print(f"Error saving heatmap: {e}")
+        logger.error(f"Error saving heatmap: {e}")
 
-def process_prediction_result(case_request, result_data):
+def process_prediction_result(case_request, result_data, model_version):
     if not result_data:
         return
     for disease, values in result_data.items():
         prediction, _ = Prediction.objects.update_or_create(
             case_request=case_request,
             disease_name=disease,
+            model_version=model_version,
             defaults={
                 'prediction_value': values.get('prediction', 0.0),
                 'balanced_score': values.get('balanced_score', 0.0),
@@ -60,7 +65,7 @@ def process_prediction_result(case_request, result_data):
         )
         save_heatmap(prediction, values.get('heatmap', ''))
 
-def process_segmentation_result(case_request, result_data):
+def process_segmentation_result(case_request, result_data, model_version):
     if not result_data or 'heatmap' not in result_data:
         return
 
@@ -78,6 +83,7 @@ def process_segmentation_result(case_request, result_data):
             segment, _ = Segment.objects.update_or_create(
                 case_request=case_request,
                 class_name=class_name,
+                model_version=model_version,
                 defaults={
                     'width': segment_image.width,
                     'height': segment_image.height,
@@ -86,36 +92,225 @@ def process_segmentation_result(case_request, result_data):
             )
             segment.segment_image.save("segment.png", ContentFile(img_buffer.getvalue()), save=True)
         except Exception as e:
-            print(f"Error saving segment for {class_name}: {e}")
+            logger.error(f"Error saving segment for {class_name}: {e}")
+
+
+def process_profile_workflow(case_request, profile, raw_image, file_data, filename, content_type):
+    """
+    Helper function to process a single profile:
+    1. Call APIs
+    2. Save Predictions/Segments
+    3. Generate Overlay
+    4. Save OverlayHeatmap with version
+    
+    Returns: (success, errors)
+    """
+    logger.info(f"Processing profile: {profile.name}")
+    errors = []
+    
+    # Determine version for config and DB
+    version_key = "v3.5.1"
+    if "v4.5.0" in profile.name:
+        version_key = "v4.5.0"
+
+    # 1. Call APIs
+    urls = {}
+    for model in profile.cxr_models.filter(is_active=True):
+        urls[model.service_type] = model.api_url
+
+    data = {'request_id': str(case_request.request_id)}
+    
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_url = {
+            executor.submit(
+                call_prediction_api, 
+                url, 
+                file_data, 
+                filename, 
+                content_type, 
+                data
+            ): name 
+            for name, url in urls.items()
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_url):
+            name = future_to_url[future]
+            try:
+                res = future.result()
+                if isinstance(res, dict) and 'error' in res:
+                     msg = f"API Error [{name}]: {res['error']}"
+                     logger.error(msg)
+                     errors.append(msg)
+                else:
+                    results[name] = res
+            except Exception as exc:
+                msg = f"Exception calling {name}: {exc}"
+                logger.error(msg)
+                errors.append(msg)
+
+    # 2. Process results (Saves to DB with version)
+    try:
+        if 'result' in results.get('abnormality', {}):
+            process_prediction_result(case_request, results['abnormality']['result'], version_key)
+        
+        if 'result' in results.get('tuberculosis', {}):
+            process_prediction_result(case_request, results['tuberculosis']['result'], version_key)
+            
+        if 'result' in results.get('pneumothorax', {}):
+            process_prediction_result(case_request, results['pneumothorax']['result'], version_key)
+        
+        if 'result' in results.get('lung_segmentation', {}):
+            process_segmentation_result(case_request, results['lung_segmentation']['result'], version_key)
+            
+        if 'result' in results.get('pleural_effusion_segmentation', {}):
+            process_segmentation_result(case_request, results['pleural_effusion_segmentation']['result'], version_key)
+            
+        if 'result' in results.get('pneumothorax_segmentation', {}):
+            process_segmentation_result(case_request, results['pneumothorax_segmentation']['result'], version_key)
+    except Exception as e:
+        msg = f"Error processing results for {version_key}: {e}"
+        logger.error(msg)
+        errors.append(msg)
+
+
+    # 3. Heatmap orchestration (Overlay)
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        if version_key == "v4.5.0":
+            config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'config_v4.yml')
+            overlay_config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'overlay_config_v4.yml')
+        else:
+            config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'config.yml')
+            overlay_config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'overlay_config.yml')
+
+        custom_config = HeatmapConfig(config_path)
+        custom_overlay_config = InspectraImageOverlayConfig(overlay_config_path)
+        processor = HeatmapOverlayProcessor(config=custom_config, overlay_config=custom_overlay_config)
+
+        heatmap_paths = {}
+        confidence_scores = {}
+        heatmap_settings = {}
+        
+        # Collect heatmaps and scores from Predictions (filtered by version)
+        predictions = Prediction.objects.filter(case_request=case_request, model_version=version_key)
+        for pred in predictions:
+            if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                heatmap_paths[pred.disease_name] = pred.heatmap.heatmap_image.path
+                confidence_scores[pred.disease_name] = pred.balanced_score
+                heatmap_settings[pred.disease_name] = custom_config.get_heatmap_setting(pred.disease_name)
+
+        # Collect segments (filtered by version)
+        segments = Segment.objects.filter(case_request=case_request, model_version=version_key)
+        lung_mask_path = None
+        lung_convex_mask_path = None
+        fallback_heatmap_paths = {}
+        
+        for seg in segments:
+            if seg.class_name == 'Lung':
+                lung_mask_path = seg.segment_image.path
+            elif seg.class_name == 'Lung Convex':
+                lung_convex_mask_path = seg.segment_image.path
+            elif seg.segment_image:
+                # Special handling for Pneumothorax
+                if seg.class_name == 'Pneumothorax':
+                    heatmap_paths['Pneumothorax'] = seg.segment_image.path
+                    heatmap_settings['Pneumothorax'] = custom_config.get_heatmap_setting('Pneumothorax')
+                    pred = predictions.filter(disease_name='Pneumothorax').first()
+                    if pred and hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                        fallback_heatmap_paths['Pneumothorax'] = pred.heatmap.heatmap_image.path
+                else:
+                    heatmap_paths[seg.class_name + ' Segmentation'] = seg.segment_image.path
+                    heatmap_settings[seg.class_name + ' Segmentation'] = custom_config.get_heatmap_setting(seg.class_name)
+                    pred = predictions.filter(disease_name=seg.class_name).first()
+                    if pred:
+                        confidence_scores[seg.class_name + ' Segmentation'] = pred.balanced_score
+
+        if lung_mask_path and raw_image.image:
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                output_path = tmp_file.name
+            
+            if version_key == "v4.5.0":
+                result = processor.process_from_files(
+                    heatmap_paths=heatmap_paths,
+                    lung_mask_path=lung_mask_path,
+                    raw_image_path=raw_image.image.path,
+                    scores=confidence_scores,
+                    output_path=output_path,
+                    mode="color",
+                    fallback_heatmap_paths=fallback_heatmap_paths,
+                    use_v4_processing=True,
+                    heatmap_settings=heatmap_settings,
+                    convex_lung_mask_path=lung_convex_mask_path,
+                    save_processed_heatmaps=False,
+                    processed_heatmap_output_dir="example_output"
+                )
+            else:
+                result = processor.process_from_files(
+                    heatmap_paths=heatmap_paths,
+                    lung_mask_path=lung_mask_path,
+                    raw_image_path=raw_image.image.path,
+                    scores=confidence_scores,
+                    output_path=output_path,
+                    mode="color",
+                    fallback_heatmap_paths=fallback_heatmap_paths,
+                    save_processed_heatmaps=False
+                )
+
+            if result is not None and os.path.exists(output_path):
+                # 4. Save to OverlayHeatmap model
+                with open(output_path, 'rb') as f:
+                    overlay_content = f.read()
+                    
+                overlay, _ = OverlayHeatmap.objects.update_or_create(
+                    case_request=case_request,
+                    version=version_key,
+                    defaults={
+                        'width': raw_image.width,
+                        'height': raw_image.height,
+                        'file_size': len(overlay_content)
+                    }
+                )
+                # Save with a unique name including version
+                overlay.overlay_image.save(f"overlay_heatmap_{version_key}.png", ContentFile(overlay_content), save=True)
+                
+                os.remove(output_path)
+                return True, errors
+
+    except Exception as e:
+        msg = f"Error in overlay generation for {profile.name}: {e}"
+        logger.error(msg)
+        import traceback
+        traceback.print_exc()
+        errors.append(msg)
+    
+    return False, errors
 
 
 def upload_test(request):
     if request.method == 'POST':
         if 'image' in request.FILES:
             uploaded_file = request.FILES['image']
-            profile_id = request.POST.get('profile_id')
-            profile = None
             
-            if profile_id:
-                try:
-                    profile = PredictionProfile.objects.get(id=profile_id)
-                except Exception:
-                    pass
+            # Find profiles
+            profile_v3 = PredictionProfile.objects.filter(name__icontains="v3.5.1", is_active=True).first()
+            profile_v4 = PredictionProfile.objects.filter(name__icontains="v4.5.0", is_active=True).first()
             
-            # Fallback to default profile if none selected (or create one if needed)
-            if not profile:
-                 # Try to find a default profile or the first active one
-                profile = PredictionProfile.objects.filter(is_active=True).first()
-
-            if not profile:
-                return HttpResponse("<h2>Error: No active Prediction Profile found. Please configure one in Admin.</h2>")
+            if not profile_v3 or not profile_v4:
+                 # Fallback search if exact names not found
+                profiles = PredictionProfile.objects.filter(is_active=True)
+                for p in profiles:
+                    if "v3" in p.name and not profile_v3: profile_v3 = p
+                    if "v4" in p.name and not profile_v4: profile_v4 = p
+            
+            if not profile_v3 or not profile_v4:
+                return HttpResponse(f"<h2>Error: Could not find both v3.5.1 and v4.5.0 profiles. Found: v3={profile_v3}, v4={profile_v4}</h2>")
 
             # Create CaseRequest
-            case_request = CaseRequest.objects.create(
-                profile=profile,
-            )
+            case_request = CaseRequest.objects.create()
 
-            # Create RawImage instance with the case_request
+            # Create RawImage instance
             raw_image = RawImage()
             raw_image.case_request = case_request
             raw_image.image = uploaded_file
@@ -123,7 +318,6 @@ def upload_test(request):
             raw_image.content_type = uploaded_file.content_type
             raw_image.file_size = uploaded_file.size
 
-            # Get image dimensions
             try:
                 img = Image.open(uploaded_file)
                 raw_image.width, raw_image.height = img.size
@@ -131,203 +325,104 @@ def upload_test(request):
                 pass
 
             raw_image.save()
-
             case_request.success_upload = True
             case_request.save()
 
-            # Send uploaded image to prediction API
-            prediction_success = False
-            prediction_error = None
+            # Read file content once
+            uploaded_file.seek(0)
+            file_data = uploaded_file.read()
 
-            try:
-                # Read file content once
-                uploaded_file.seek(0)
-                file_data = uploaded_file.read()
-                
-                # Construct URLs dynamically from the profile
-                urls = {}
-                for model in profile.cxr_models.filter(is_active=True):
-                    urls[model.service_type] = model.api_url
+            all_errors = []
 
-                data = {'request_id': str(case_request.request_id)}
-                
-                results = {}
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future_to_url = {
-                        executor.submit(
-                            call_prediction_api, 
-                            url, 
-                            file_data, 
-                            uploaded_file.name, 
-                            uploaded_file.content_type, 
-                            data
-                        ): name 
-                        for name, url in urls.items()
-                    }
-                    
-                    for future in concurrent.futures.as_completed(future_to_url):
-                        name = future_to_url[future]
-                        try:
-                            results[name] = future.result()
-                        except Exception as exc:
-                            print(f'{name} generated an exception: {exc}')
+            # Process v3.5.1
+            success_v3, errors_v3 = process_profile_workflow(case_request, profile_v3, raw_image, file_data, uploaded_file.name, uploaded_file.content_type)
+            if errors_v3:
+                all_errors.extend([f"[v3.5.1] {e}" for e in errors_v3])
 
-                # Process results
-                if 'result' in results.get('abnormality', {}):
-                    process_prediction_result(case_request, results['abnormality']['result'])
-                
-                if 'result' in results.get('tuberculosis', {}):
-                    process_prediction_result(case_request, results['tuberculosis']['result'])
-                    
-                if 'result' in results.get('pneumothorax', {}):
-                    process_prediction_result(case_request, results['pneumothorax']['result'])
-                
-                if 'result' in results.get('lung_segmentation', {}):
-                    process_segmentation_result(case_request, results['lung_segmentation']['result'])
-                    
-                if 'result' in results.get('pleural_effusion_segmentation', {}):
-                    process_segmentation_result(case_request, results['pleural_effusion_segmentation']['result'])
-                    
-                if 'result' in results.get('pneumothorax_segmentation', {}):
-                    process_segmentation_result(case_request, results['pneumothorax_segmentation']['result'])
+            # Process v4.5.0
+            success_v4, errors_v4 = process_profile_workflow(case_request, profile_v4, raw_image, file_data, uploaded_file.name, uploaded_file.content_type)
+            if errors_v4:
+                all_errors.extend([f"[v4.5.0] {e}" for e in errors_v4])
 
+            case_request.success_process = success_v3 and success_v4 
+            case_request.save()
 
-                # Heatmap orchestration (Overlay)
-                try:
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'config.yml')
-                    overlay_config_path = os.path.join(current_dir, 'heatmap_orchestrate', 'configs', 'overlay_config.yml')
+            # Retrieve overlays for display
+            overlay_v3 = OverlayHeatmap.objects.filter(case_request=case_request, version="v3.5.1").first()
+            overlay_v4 = OverlayHeatmap.objects.filter(case_request=case_request, version="v4.5.0").first()
+            
+            v3_url = overlay_v3.overlay_image.url if overlay_v3 else ""
+            v4_url = overlay_v4.overlay_image.url if overlay_v4 else ""
+            raw_url = raw_image.image.url
 
-                    custom_config = HeatmapConfig(config_path)
-                    custom_overlay_config = InspectraImageOverlayConfig(overlay_config_path)
-                    processor = HeatmapOverlayProcessor(config=custom_config, overlay_config=custom_overlay_config)
-
-                    heatmap_paths = {}
-                    confidence_scores = {}
-                    
-                    # Collect heatmaps and scores from Predictions
-                    predictions = Prediction.objects.filter(case_request=case_request)
-                    for pred in predictions:
-                        if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
-                            heatmap_paths[pred.disease_name] = pred.heatmap.heatmap_image.path
-                            confidence_scores[pred.disease_name] = pred.balanced_score
-
-                    # Collect segments
-                    segments = Segment.objects.filter(case_request=case_request)
-                    lung_mask_path = None
-                    fallback_heatmap_paths = {}
-                    
-                    for seg in segments:
-
-                        if seg.class_name == 'Lung':
-                            lung_mask_path = seg.segment_image.path
-
-                        elif seg.class_name == 'Lung Convex':
-                            lung_convex_mask_path = seg.segment_image.path
-
-                        elif seg.segment_image:
-                            # Special handling for Pneumothorax
-                            if seg.class_name == 'Pneumothorax':
-                                # Use segment as primary
-                                heatmap_paths['Pneumothorax'] = seg.segment_image.path
-                                
-                                # If we already had a heatmap from prediction (which we collected above),
-                                # move it to fallback
-                                pred = predictions.filter(disease_name='Pneumothorax').first()
-                                if pred and hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
-                                    fallback_heatmap_paths['Pneumothorax'] = pred.heatmap.heatmap_image.path
-
-                            else:
-                                # For other segments, treat as usual (maybe overwrite or add)
-                                heatmap_paths[seg.class_name + ' Segmentation'] = seg.segment_image.path
-                                pred = predictions.filter(disease_name=seg.class_name).first()
-                                if pred:
-                                    confidence_scores[seg.class_name + ' Segmentation'] = pred.balanced_score
-
-                    if lung_mask_path and raw_image.image:
-                        # We need a temporary path for output
-                        # Or we can save directly to a temp file and then read it
-                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                            output_path = tmp_file.name
-                        
-                        # Fallback paths are now populated in the loop above
-
-
-                        result = processor.process_from_files(
-                            heatmap_paths=heatmap_paths,
-                            lung_mask_path=lung_mask_path,
-                            raw_image_path=raw_image.image.path,
-                            scores=confidence_scores,
-                            output_path=output_path,
-                            mode="color",
-                            fallback_heatmap_paths=fallback_heatmap_paths,
-                            save_processed_heatmaps=False # We don't need intermediate files stored permanently by processor
-                        )
-
-                        if result is not None and os.path.exists(output_path):
-                            # Save to OverlayHeatmap model
-                            with open(output_path, 'rb') as f:
-                                overlay_content = f.read()
-                                
-                            overlay, _ = OverlayHeatmap.objects.update_or_create(
-                                case_request=case_request,
-                                defaults={
-                                    'width': raw_image.width, # Assuming same size
-                                    'height': raw_image.height,
-                                    'file_size': len(overlay_content)
-                                }
-                            )
-                            overlay.overlay_image.save("overlay_heatmap.png", ContentFile(overlay_content), save=True)
-                            
-                            # Clean up temp file
-                            os.remove(output_path)
-
-                except Exception as e:
-                    print(f"Error in overlay generation: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                # Mark prediction as successful
-                case_request.success_process = True
-                case_request.save()
-                prediction_success = True
-
-            except Exception as e:
-                prediction_error = str(e)
+            error_html = ""
+            if all_errors:
+                error_list = "".join([f"<li>{e}</li>" for e in all_errors])
+                error_html = f"""
+                <div style="background-color: #f8d7da; color: #721c24; padding: 10px; margin-bottom: 20px; border: 1px solid #f5c6cb; border-radius: 5px;">
+                    <h3>⚠️ Errors Occurred During Processing:</h3>
+                    <ul>{error_list}</ul>
+                </div>
+                """
 
             prediction_status_html = ""
-            if prediction_success:
+            if case_request.success_process:
                 prediction_status_html = f"""
-                <h3 style="color: green;">✓ Prediction Successful!</h3>
-                <p><strong>success_process:</strong> {case_request.success_process}</p>
+                <h3 style="color: green;">✓ All Predictions Successful!</h3>
                 """
-            elif prediction_error:
+            else:
                 prediction_status_html = f"""
-                <h3 style="color: red;">✗ Prediction Failed</h3>
-                <p><strong>Error:</strong> {prediction_error}</p>
-                <p><strong>success_process:</strong> {case_request.success_process}</p>
+                <h3 style="color: orange;">⚠ Completed with Issues (Success Status: {case_request.success_process})</h3>
                 """
 
             return HttpResponse(f"""
-            <h2>Upload Successful!</h2>
-            <p><strong>Request ID:</strong> {case_request.request_id}</p>
-            <p><strong>RawImage ID:</strong> {raw_image.id}</p>
-            <p><strong>CaseRequest ID:</strong> {case_request.id}</p>
-            <p><strong>Filename:</strong> {raw_image.original_filename}</p>
-            <p><strong>Size:</strong> {raw_image.file_size} bytes</p>
-            <p><strong>Dimensions:</strong> {raw_image.width}x{raw_image.height}</p>
-            <p><strong>Content Type:</strong> {raw_image.content_type}</p>
-            <p><strong>Image URL:</strong> <a href="{raw_image.image.url}" target="_blank">{raw_image.image.url}</a></p>
-            {prediction_status_html}
-            <br>
-            <p>You can filter by request_id to get both records:</p>
-            <ul>
-                <li>RawImage.objects.filter(case_request__request_id='{case_request.request_id}')</li>
-                <li>CaseRequest.objects.filter(request_id='{case_request.request_id}')</li>
-            </ul>
-            <br>
-            <a href="/test-upload/">Upload Another</a> |
-            <a href="/admin/">View in Admin</a>
+            <html>
+            <head>
+                <style>
+                    .container {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                    .image-container {{ position: relative; width: 100%; max-width: 600px; margin-top: 20px; }}
+                    .display-img {{ width: 100%; display: none; }}
+                    .display-img.active {{ display: block; }}
+                    .controls {{ margin-bottom: 20px; }}
+                    button {{ padding: 10px 20px; cursor: pointer; margin-right: 10px; }}
+                    button.active {{ background-color: #007bff; color: white; border: none; }}
+                </style>
+                <script>
+                    function showImage(type) {{
+                        document.querySelectorAll('.display-img').forEach(img => img.classList.remove('active'));
+                        document.getElementById('img-' + type).classList.add('active');
+                        
+                        document.querySelectorAll('button').forEach(btn => btn.classList.remove('active'));
+                        document.getElementById('btn-' + type).classList.add('active');
+                    }}
+                </script>
+            </head>
+            <body>
+                <div class="container">
+                    <h2>Analysis Result</h2>
+                    {error_html}
+                    <p><strong>Request ID:</strong> {case_request.request_id}</p>
+                    
+                    <div class="controls">
+                        <button id="btn-raw" onclick="showImage('raw')" class="active">Raw Image</button>
+                        <button id="btn-v3" onclick="showImage('v3')">v3.5.1 Overlay</button>
+                        <button id="btn-v4" onclick="showImage('v4')">v4.5.0 Overlay</button>
+                    </div>
+
+                    <div class="image-container">
+                        <img id="img-raw" src="{raw_url}" class="display-img active" alt="Raw Image">
+                        <img id="img-v3" src="{v3_url}" class="display-img" alt="v3.5.1 Overlay">
+                        <img id="img-v4" src="{v4_url}" class="display-img" alt="v4.5.0 Overlay">
+                    </div>
+                    
+                    <br>
+                    {prediction_status_html}
+                    <br>
+                    <a href="/test-upload/">Upload Another</a> |
+                    <a href="/admin/">View in Admin</a>
+                </div>
+            </body>
+            </html>
             """)
 
     profiles = PredictionProfile.objects.filter(is_active=True)

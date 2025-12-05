@@ -12,13 +12,7 @@
         <h3>Select Image File</h3>
         <input type="file" name="image" accept="image/*" required>
         <br>
-        <h3>Select Prediction Profile</h3>
-        <select name="profile_id" required>
-            {% for profile in profiles %}
-                <option value="{{ profile.id }}">{{ profile.name }}</option>
-            {% endfor %}
-        </select>
-        <br>
+
         <br>
         <input type="submit" value="Upload Image">
     </form>

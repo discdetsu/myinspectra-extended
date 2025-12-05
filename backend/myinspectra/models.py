@@ -72,8 +72,8 @@ class CaseRequest(models.Model):
     """Store case request data for X-ray analysis"""
 
     request_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
-    profile = models.ForeignKey(PredictionProfile, on_delete=models.SET_NULL, null=True, blank=True)
-    model_version = models.ForeignKey(CXRModel, on_delete=models.SET_NULL, null=True, blank=True, help_text="Legacy field, use profile instead")
+    # profile field removed
+    model_version = models.ForeignKey(CXRModel, on_delete=models.SET_NULL, null=True, blank=True, help_text="Legacy field")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -118,6 +118,7 @@ class Prediction(models.Model):
 
     case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='predictions')
     disease_name = models.CharField(max_length=100, help_text="Disease name from API response")
+    model_version = models.CharField(max_length=20, default='v3.5.1')
 
     # Prediction values from API
     prediction_value = models.FloatField(help_text="Raw prediction value from API")
@@ -129,10 +130,10 @@ class Prediction(models.Model):
 
     class Meta:
         ordering = ['-created_at']
-        unique_together = ['case_request', 'disease_name']  # One prediction per disease per case
+        unique_together = ['case_request', 'disease_name', 'model_version']
 
     def __str__(self):
-        return f"{self.case_request.request_id}"
+        return f"{self.case_request.request_id} - {self.disease_name} ({self.model_version})"
 
 
 class Heatmap(models.Model):
@@ -160,6 +161,7 @@ class Segment(models.Model):
     """Store segment images for UNet models"""
     case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='segments')
     class_name = models.CharField(max_length=100)
+    model_version = models.CharField(max_length=20, default='v3.5.1')
     segment_image = models.ImageField(upload_to=segment_upload_path)
 
     # Image metadata
@@ -175,12 +177,13 @@ class Segment(models.Model):
         ordering = ['-created_at']
     
     def __str__(self):
-        return f"{self.case_request.request_id}"
+        return f"{self.case_request.request_id} - {self.class_name} ({self.model_version})"
 
 
 class OverlayHeatmap(models.Model):
     """Store overlay heatmap images (aggregated from heatmaps and segments)"""
-    case_request = models.OneToOneField(CaseRequest, on_delete=models.CASCADE, related_name='overlay_heatmap')
+    case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='overlay_heatmaps')
+    version = models.CharField(max_length=20, default='v3.5.1')
     overlay_image = models.ImageField(upload_to=overlay_heatmap_upload_path)
     
     # Image metadata
@@ -193,7 +196,8 @@ class OverlayHeatmap(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        unique_together = ['case_request', 'version']
 
     def __str__(self):
-        return f"{self.case_request.request_id}"
+        return f"{self.case_request.request_id} - {self.version}"
 

@@ -1,0 +1,36 @@
+# Python specific ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Version control and editor files
+.git/
+.gitignore
+.hg/
+.svn/
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Local development and build artifacts
+.env
+.DS_Store
+docker-compose.yml
+Dockerfile
+README.md
+LICENSE
+
+media/

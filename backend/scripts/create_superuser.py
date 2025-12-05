@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """
 Django Superuser Creation Script
 
