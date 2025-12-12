@@ -27,18 +27,9 @@ django.setup()
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from dotenv import load_dotenv
 
 def create_superuser():
     """Create a superuser using credentials from .env file"""
-
-    # Load environment variables from .env file
-    env_path = backend_dir.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"✓ Loaded environment variables from {env_path}")
-    else:
-        print(f"⚠ Warning: .env file not found at {env_path}")
 
     # Get credentials from environment
     username = os.getenv('DJANGO_ADMIN_USERNAME')

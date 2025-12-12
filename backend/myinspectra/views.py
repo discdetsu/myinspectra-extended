@@ -94,6 +94,55 @@ def process_segmentation_result(case_request, result_data, model_version):
         except Exception as e:
             logger.error(f"Error saving segment for {class_name}: {e}")
 
+        
+class TempFileManager:
+    """Helper class to manage downloading S3 files to temporary local files."""
+    def __init__(self):
+        self.temp_files = []
+
+    def get_path(self, django_file):
+        """
+        Get a local filesystem path for a Django file object.
+        If the storage is S3-like (no local path), downloads to a temp file.
+        """
+        if not django_file:
+            return None
+            
+        try:
+            return django_file.path
+        except NotImplementedError:
+            # S3 or other storage that doesn't support .path
+            # Download to temp file
+            try:
+                # Use suffix from name if available
+                ext = os.path.splitext(django_file.name)[1]
+                # Create temp file; delete=False so we can close and use it
+                tf = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                
+                # Read content and write to temp
+                django_file.open('rb') # Ensure open
+                tf.write(django_file.read())
+                django_file.close() # Good practice to close
+                tf.close()
+                
+                self.temp_files.append(tf.name)
+                return tf.name
+            except Exception as e:
+                logger.error(f"Error creating temp file for {django_file.name}: {e}")
+                # Try to cleanup if failed halfway
+                if 'tf' in locals() and tf and os.path.exists(tf.name):
+                     try: os.remove(tf.name) 
+                     except: pass
+                raise
+
+    def cleanup(self):
+        """Remove all temporary files created."""
+        for path in self.temp_files:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 def process_profile_workflow(case_request, profile, raw_image, file_data, filename, content_type):
     """
@@ -189,74 +238,113 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
         custom_overlay_config = InspectraImageOverlayConfig(overlay_config_path)
         processor = HeatmapOverlayProcessor(config=custom_config, overlay_config=custom_overlay_config)
 
-        heatmap_paths = {}
-        confidence_scores = {}
-        heatmap_settings = {}
-        
-        # Collect heatmaps and scores from Predictions (filtered by version)
-        predictions = Prediction.objects.filter(case_request=case_request, model_version=version_key)
-        for pred in predictions:
-            if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
-                heatmap_paths[pred.disease_name] = pred.heatmap.heatmap_image.path
-                confidence_scores[pred.disease_name] = pred.balanced_score
-                heatmap_settings[pred.disease_name] = custom_config.get_heatmap_setting(pred.disease_name)
+        temp_manager = TempFileManager()
 
-        # Collect segments (filtered by version)
-        segments = Segment.objects.filter(case_request=case_request, model_version=version_key)
-        lung_mask_path = None
-        lung_convex_mask_path = None
-        fallback_heatmap_paths = {}
-        
-        for seg in segments:
-            if seg.class_name == 'Lung':
-                lung_mask_path = seg.segment_image.path
-            elif seg.class_name == 'Lung Convex':
-                lung_convex_mask_path = seg.segment_image.path
-            elif seg.segment_image:
-                # Special handling for Pneumothorax
-                if seg.class_name == 'Pneumothorax':
-                    heatmap_paths['Pneumothorax'] = seg.segment_image.path
-                    heatmap_settings['Pneumothorax'] = custom_config.get_heatmap_setting('Pneumothorax')
-                    pred = predictions.filter(disease_name='Pneumothorax').first()
-                    if pred and hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
-                        fallback_heatmap_paths['Pneumothorax'] = pred.heatmap.heatmap_image.path
-                else:
-                    heatmap_paths[seg.class_name + ' Segmentation'] = seg.segment_image.path
-                    heatmap_settings[seg.class_name + ' Segmentation'] = custom_config.get_heatmap_setting(seg.class_name)
-                    pred = predictions.filter(disease_name=seg.class_name).first()
-                    if pred:
-                        confidence_scores[seg.class_name + ' Segmentation'] = pred.balanced_score
-
-        if lung_mask_path and raw_image.image:
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                output_path = tmp_file.name
+        try:
+            heatmap_paths = {}
+            confidence_scores = {}
+            heatmap_settings = {}
             
-            if version_key == "v4.5.0":
-                result = processor.process_from_files(
-                    heatmap_paths=heatmap_paths,
-                    lung_mask_path=lung_mask_path,
-                    raw_image_path=raw_image.image.path,
-                    scores=confidence_scores,
-                    output_path=output_path,
-                    mode="color",
-                    fallback_heatmap_paths=fallback_heatmap_paths,
-                    use_v4_processing=True,
-                    heatmap_settings=heatmap_settings,
-                    convex_lung_mask_path=lung_convex_mask_path,
-                    save_processed_heatmaps=False,
-                    processed_heatmap_output_dir="example_output"
-                )
-            else:
-                result = processor.process_from_files(
-                    heatmap_paths=heatmap_paths,
-                    lung_mask_path=lung_mask_path,
-                    raw_image_path=raw_image.image.path,
-                    scores=confidence_scores,
-                    output_path=output_path,
-                    mode="color",
-                    fallback_heatmap_paths=fallback_heatmap_paths,
-                    save_processed_heatmaps=False
-                )
+            # Collect heatmaps and scores from Predictions (filtered by version)
+            predictions = Prediction.objects.filter(case_request=case_request, model_version=version_key)
+            for pred in predictions:
+                if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                    # Get temp path (downloads if S3)
+                    path = temp_manager.get_path(pred.heatmap.heatmap_image)
+                    if path:
+                        heatmap_paths[pred.disease_name] = path
+                        confidence_scores[pred.disease_name] = pred.balanced_score
+                        heatmap_settings[pred.disease_name] = custom_config.get_heatmap_setting(pred.disease_name)
+
+            # Collect segments (filtered by version)
+            segments = Segment.objects.filter(case_request=case_request, model_version=version_key)
+            lung_mask_path = None
+            lung_convex_mask_path = None
+            fallback_heatmap_paths = {}
+            
+            for seg in segments:
+                if seg.class_name == 'Lung':
+                    lung_mask_path = temp_manager.get_path(seg.segment_image)
+                elif seg.class_name == 'Lung Convex':
+                    lung_convex_mask_path = temp_manager.get_path(seg.segment_image)
+                elif seg.segment_image:
+                    path = temp_manager.get_path(seg.segment_image)
+                    if path:
+                        # Special handling for Pneumothorax
+                        if seg.class_name == 'Pneumothorax':
+                            heatmap_paths['Pneumothorax'] = path
+                            heatmap_settings['Pneumothorax'] = custom_config.get_heatmap_setting('Pneumothorax')
+                            pred = predictions.filter(disease_name='Pneumothorax').first()
+                            if pred and hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
+                                fallback_path = temp_manager.get_path(pred.heatmap.heatmap_image)
+                                if fallback_path:
+                                    fallback_heatmap_paths['Pneumothorax'] = fallback_path
+                        else:
+                            heatmap_paths[seg.class_name + ' Segmentation'] = path
+                            heatmap_settings[seg.class_name + ' Segmentation'] = custom_config.get_heatmap_setting(seg.class_name)
+                            pred = predictions.filter(disease_name=seg.class_name).first()
+                            if pred:
+                                confidence_scores[seg.class_name + ' Segmentation'] = pred.balanced_score
+            
+            raw_image_path = None
+            if raw_image.image:
+                raw_image_path = temp_manager.get_path(raw_image.image)
+            
+            if lung_mask_path and raw_image_path:
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    output_path = tmp_file.name
+                
+                # print(heatmap_paths, confidence_scores, heatmap_settings) # Debug print removed
+
+                if version_key == "v4.5.0":
+                    result = processor.process_from_files(
+                        heatmap_paths=heatmap_paths,
+                        lung_mask_path=lung_mask_path,
+                        raw_image_path=raw_image_path,
+                        scores=confidence_scores,
+                        output_path=output_path,
+                        mode="color",
+                        fallback_heatmap_paths=fallback_heatmap_paths,
+                        use_v4_processing=True,
+                        heatmap_settings=heatmap_settings,
+                        convex_lung_mask_path=lung_convex_mask_path,
+                        save_processed_heatmaps=False,
+                        processed_heatmap_output_dir="example_output"
+                    )
+                else:
+                    result = processor.process_from_files(
+                        heatmap_paths=heatmap_paths,
+                        lung_mask_path=lung_mask_path,
+                        raw_image_path=raw_image_path,
+                        scores=confidence_scores,
+                        output_path=output_path,
+                        mode="color",
+                        fallback_heatmap_paths=fallback_heatmap_paths,
+                        save_processed_heatmaps=False
+                    )
+
+                if result is not None and os.path.exists(output_path):
+                    # 4. Save to OverlayHeatmap model
+                    with open(output_path, 'rb') as f:
+                        overlay_content = f.read()
+                        
+                    overlay, _ = OverlayHeatmap.objects.update_or_create(
+                        case_request=case_request,
+                        version=version_key,
+                        defaults={
+                            'width': raw_image.width,
+                            'height': raw_image.height,
+                            'file_size': len(overlay_content)
+                        }
+                    )
+                    # Save with a unique name including version
+                    overlay.overlay_image.save(f"overlay_heatmap_{version_key}.png", ContentFile(overlay_content), save=True)
+                    
+                    os.remove(output_path)
+                    return True, errors
+        finally:
+            if 'temp_manager' in locals():
+                temp_manager.cleanup()
 
             if result is not None and os.path.exists(output_path):
                 # 4. Save to OverlayHeatmap model

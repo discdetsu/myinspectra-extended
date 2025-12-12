@@ -139,10 +139,12 @@ STORAGES = {
             "secret_key": os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
             "bucket_name": os.environ.get("MINIO_BUCKET_NAME", "myinspectra-bucket"),
             "endpoint_url": os.environ.get("MINIO_ENDPOINT_URL", "http://localhost:9000"),
+            "custom_domain": os.environ.get("MINIO_PUBLIC_DOMAIN"), # For generating external URLs
             "region_name": "us-east-1",  # Minio ignores this but boto3 requires it
             "verify": False,  # Disable SSL verification for local Minio
             "default_acl": "public-read",
             "querystring_auth": False,
+            "url_protocol": "http:", # Force HTTP since Minio is running locally without SSL
         },
     },
     "staticfiles": {

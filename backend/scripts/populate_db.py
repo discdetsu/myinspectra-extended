@@ -9,14 +9,6 @@ django.setup()
 from myinspectra.models import CXRModel, PredictionProfile
 
 # Define the models and versions
-from dotenv import load_dotenv
-
-# Load environment variables from .env file (assuming it's in the project root)
-# Adjust path if necessary. Here we assume script is run from backend/ dir, so .env is in ../
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
-load_dotenv(env_path)
-
-# Define the models and versions
 models_data = [
     ('abnormality', os.getenv('ABNORMALITY_V3_VERSION', '3.5.1'), os.getenv('ABNORMALITY_V3_URL', 'http://0.0.0.0:50035/predict')),
     ('abnormality', os.getenv('ABNORMALITY_V4_VERSION', '4.5.0'), os.getenv('ABNORMALITY_V4_URL', 'http://0.0.0.0:50045/predict')),
