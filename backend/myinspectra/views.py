@@ -244,10 +244,19 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
             heatmap_paths = {}
             confidence_scores = {}
             heatmap_settings = {}
-            
+
             # Collect heatmaps and scores from Predictions (filtered by version)
             predictions = Prediction.objects.filter(case_request=case_request, model_version=version_key)
+            
+            low_threshold_diseases = set()
             for pred in predictions:
+                if pred.thresholded_percentage == 'Low':
+                    low_threshold_diseases.add(pred.disease_name)
+
+            for pred in predictions:
+                if pred.disease_name in low_threshold_diseases:
+                    continue
+
                 if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
                     # Get temp path (downloads if S3)
                     path = temp_manager.get_path(pred.heatmap.heatmap_image)
@@ -263,6 +272,9 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
             fallback_heatmap_paths = {}
             
             for seg in segments:
+                if seg.class_name in low_threshold_diseases:
+                    continue
+
                 if seg.class_name == 'Lung':
                     lung_mask_path = temp_manager.get_path(seg.segment_image)
                 elif seg.class_name == 'Lung Convex':
@@ -293,8 +305,6 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
             if lung_mask_path and raw_image_path:
                 with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
                     output_path = tmp_file.name
-                
-                # print(heatmap_paths, confidence_scores, heatmap_settings) # Debug print removed
 
                 if version_key == "v4.5.0":
                     result = processor.process_from_files(
