@@ -1,15 +1,20 @@
 from django.shortcuts import render
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.core.files.base import ContentFile
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.core.paginator import Paginator
+import json
 import io
 import concurrent.futures
-from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile
+from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile
 from .heatmap_orchestrate.main import HeatmapOverlayProcessor
 from .heatmap_orchestrate.config import HeatmapConfig, InspectraImageOverlayConfig
+from .utils import TempFileManager, convert_dicom_to_image
 import os
-import tempfile
 import requests
 import base64
+import tempfile
 from PIL import Image
 
 import logging
@@ -95,54 +100,7 @@ def process_segmentation_result(case_request, result_data, model_version):
             logger.error(f"Error saving segment for {class_name}: {e}")
 
         
-class TempFileManager:
-    """Helper class to manage downloading S3 files to temporary local files."""
-    def __init__(self):
-        self.temp_files = []
 
-    def get_path(self, django_file):
-        """
-        Get a local filesystem path for a Django file object.
-        If the storage is S3-like (no local path), downloads to a temp file.
-        """
-        if not django_file:
-            return None
-            
-        try:
-            return django_file.path
-        except NotImplementedError:
-            # S3 or other storage that doesn't support .path
-            # Download to temp file
-            try:
-                # Use suffix from name if available
-                ext = os.path.splitext(django_file.name)[1]
-                # Create temp file; delete=False so we can close and use it
-                tf = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                
-                # Read content and write to temp
-                django_file.open('rb') # Ensure open
-                tf.write(django_file.read())
-                django_file.close() # Good practice to close
-                tf.close()
-                
-                self.temp_files.append(tf.name)
-                return tf.name
-            except Exception as e:
-                logger.error(f"Error creating temp file for {django_file.name}: {e}")
-                # Try to cleanup if failed halfway
-                if 'tf' in locals() and tf and os.path.exists(tf.name):
-                     try: os.remove(tf.name) 
-                     except: pass
-                raise
-
-    def cleanup(self):
-        """Remove all temporary files created."""
-        for path in self.temp_files:
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
 
 def process_profile_workflow(case_request, profile, raw_image, file_data, filename, content_type):
     """
@@ -411,34 +369,83 @@ def upload_test(request):
             # Create RawImage instance
             raw_image = RawImage()
             raw_image.case_request = case_request
-            raw_image.image = uploaded_file
-            raw_image.original_filename = uploaded_file.name
-            raw_image.content_type = uploaded_file.content_type
-            raw_image.file_size = uploaded_file.size
+            
+            # Check if DICOM
+            is_dicom = uploaded_file.name.lower().endswith('.dcm')
+            
+            if is_dicom:
+                # 1. Save DICOM file
+                dicom_file = DicomFile.objects.create(
+                    case_request=case_request,
+                    file=uploaded_file,
+                    original_filename=uploaded_file.name,
+                    file_size=uploaded_file.size
+                )
+                
+                # 2. Convert to Image
+                try:
+                     # Reset pointer for conversion reading
+                    uploaded_file.seek(0)
+                    pil_image = convert_dicom_to_image(uploaded_file)
+                    
+                    # Save to buffer as PNG
+                    img_buffer = io.BytesIO()
+                    pil_image.save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    
+                    # Create ContentFile for RawImage
+                    file_content = ContentFile(img_buffer.getvalue())
+                    new_filename = os.path.splitext(uploaded_file.name)[0] + ".png"
+                    
+                    raw_image.image.save(new_filename, file_content, save=False)
+                    raw_image.original_filename = uploaded_file.name # Keep original name reference or change? Keeping original seems fine for tracking.
+                    raw_image.content_type = 'image/png'
+                    raw_image.file_size = len(img_buffer.getvalue())
+                    raw_image.width = pil_image.width
+                    raw_image.height = pil_image.height
+                    
+                    # Prepare data for processing (use the converted PNG data)
+                    file_data = img_buffer.getvalue()
+                    content_type_for_api = 'image/png'
+                    filename_for_api = new_filename
+                    
+                except Exception as e:
+                    return HttpResponse(f"<h2>Error processing DICOM file: {e}</h2>")
+                
+            else:
+                # Normal Image flow
+                raw_image.image = uploaded_file
+                raw_image.original_filename = uploaded_file.name
+                raw_image.content_type = uploaded_file.content_type
+                raw_image.file_size = uploaded_file.size
+                
+                try:
+                    img = Image.open(uploaded_file)
+                    raw_image.width, raw_image.height = img.size
+                except Exception:
+                    pass
 
-            try:
-                img = Image.open(uploaded_file)
-                raw_image.width, raw_image.height = img.size
-            except Exception:
-                pass
+                # Read file content for processing
+                uploaded_file.seek(0)
+                file_data = uploaded_file.read()
+                content_type_for_api = uploaded_file.content_type
+                filename_for_api = uploaded_file.name
 
             raw_image.save()
             case_request.success_upload = True
             case_request.save()
 
-            # Read file content once
-            uploaded_file.seek(0)
-            file_data = uploaded_file.read()
+            # (File data already prepared above)
 
             all_errors = []
 
             # Process v3.5.1
-            success_v3, errors_v3 = process_profile_workflow(case_request, profile_v3, raw_image, file_data, uploaded_file.name, uploaded_file.content_type)
+            success_v3, errors_v3 = process_profile_workflow(case_request, profile_v3, raw_image, file_data, filename_for_api, content_type_for_api)
             if errors_v3:
                 all_errors.extend([f"[v3.5.1] {e}" for e in errors_v3])
 
             # Process v4.5.0
-            success_v4, errors_v4 = process_profile_workflow(case_request, profile_v4, raw_image, file_data, uploaded_file.name, uploaded_file.content_type)
+            success_v4, errors_v4 = process_profile_workflow(case_request, profile_v4, raw_image, file_data, filename_for_api, content_type_for_api)
             if errors_v4:
                 all_errors.extend([f"[v4.5.0] {e}" for e in errors_v4])
 
@@ -525,3 +532,232 @@ def upload_test(request):
 
     profiles = PredictionProfile.objects.filter(is_active=True)
     return render(request, 'upload_test.html', {'profiles': profiles})
+
+
+# =============================================================================
+# REST API Endpoints for React Frontend
+# =============================================================================
+
+@require_http_methods(["GET"])
+def api_case_list(request):
+    """
+    GET /api/cases/
+    Returns paginated list of cases for history table.
+    Query params: page, page_size, search
+    """
+    page = int(request.GET.get('page', 1))
+    page_size = int(request.GET.get('page_size', 10))
+    search = request.GET.get('search', '')
+    
+    cases = CaseRequest.objects.filter(success_upload=True).order_by('-created_at')
+    
+    if search:
+        cases = cases.filter(request_id__icontains=search)
+    
+    paginator = Paginator(cases, page_size)
+    page_obj = paginator.get_page(page)
+    
+    case_list = []
+    for case in page_obj:
+        # Get associated raw image
+        raw_image = RawImage.objects.filter(case_request=case).first()
+        
+        # Get predictions summary (abnormality and tuberculosis scores)
+        predictions = Prediction.objects.filter(case_request=case, model_version='v4.5.0')
+        abnormality_pred = predictions.filter(disease_name='Abnormality').first()
+        tb_pred = predictions.filter(disease_name='Tuberculosis').first()
+        
+        # Get all conditions with their thresholded values
+        conditions = []
+        for pred in predictions:
+            if pred.thresholded_percentage != 'Low':
+                conditions.append({
+                    'name': pred.disease_name,
+                    'thresholded': pred.thresholded_percentage
+                })
+        
+        case_list.append({
+            'request_id': str(case.request_id),
+            'created_at': case.created_at.isoformat(),
+            'patient_name': raw_image.original_filename if raw_image else 'N/A',
+            'raw_image_url': raw_image.image.url if raw_image and raw_image.image else None,
+            'success_process': case.success_process,
+            'abnormality_score': abnormality_pred.thresholded_percentage if abnormality_pred else None,
+            'tuberculosis_score': tb_pred.thresholded_percentage if tb_pred else None,
+            'conditions': conditions,
+        })
+    
+    return JsonResponse({
+        'cases': case_list,
+        'total_count': paginator.count,
+        'total_pages': paginator.num_pages,
+        'current_page': page,
+        'has_next': page_obj.has_next(),
+        'has_previous': page_obj.has_previous(),
+    })
+
+
+@require_http_methods(["GET"])
+def api_case_detail(request, request_id):
+    """
+    GET /api/cases/<uuid>/
+    Returns full case details including predictions and overlays for preview page.
+    """
+    try:
+        case = CaseRequest.objects.get(request_id=request_id)
+    except CaseRequest.DoesNotExist:
+        return JsonResponse({'error': 'Case not found'}, status=404)
+    
+    # Get raw image
+    raw_image = RawImage.objects.filter(case_request=case).first()
+    
+    # Get predictions grouped by version
+    predictions_data = {}
+    for version in ['v3.5.1', 'v4.5.0']:
+        predictions = Prediction.objects.filter(case_request=case, model_version=version)
+        predictions_data[version] = [
+            {
+                'disease_name': pred.disease_name,
+                'prediction_value': pred.prediction_value,
+                'balanced_score': pred.balanced_score,
+                'thresholded_percentage': pred.thresholded_percentage,
+            }
+            for pred in predictions
+        ]
+    
+    # Get overlay heatmaps
+    overlays = {}
+    for overlay in OverlayHeatmap.objects.filter(case_request=case):
+        overlays[overlay.version] = {
+            'url': overlay.overlay_image.url if overlay.overlay_image else None,
+            'width': overlay.width,
+            'height': overlay.height,
+        }
+    
+    return JsonResponse({
+        'request_id': str(case.request_id),
+        'created_at': case.created_at.isoformat(),
+        'success_process': case.success_process,
+        'raw_image': {
+            'url': raw_image.image.url if raw_image and raw_image.image else None,
+            'filename': raw_image.original_filename if raw_image else None,
+            'width': raw_image.width if raw_image else None,
+            'height': raw_image.height if raw_image else None,
+        },
+        'predictions': predictions_data,
+        'overlays': overlays,
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_upload(request):
+    """
+    POST /api/upload/
+    Upload an image and process it. Returns the case ID for redirect.
+    """
+    if 'image' not in request.FILES:
+        return JsonResponse({'error': 'No image file provided'}, status=400)
+    
+    uploaded_file = request.FILES['image']
+    
+    # Find profiles
+    profile_v3 = PredictionProfile.objects.filter(name__icontains="v3.5.1", is_active=True).first()
+    profile_v4 = PredictionProfile.objects.filter(name__icontains="v4.5.0", is_active=True).first()
+    
+    if not profile_v3 or not profile_v4:
+        profiles = PredictionProfile.objects.filter(is_active=True)
+        for p in profiles:
+            if "v3" in p.name and not profile_v3: profile_v3 = p
+            if "v4" in p.name and not profile_v4: profile_v4 = p
+    
+    if not profile_v3 or not profile_v4:
+        return JsonResponse({
+            'error': f'Could not find both prediction profiles. Found: v3={bool(profile_v3)}, v4={bool(profile_v4)}'
+        }, status=500)
+    
+    # Create CaseRequest
+    case_request = CaseRequest.objects.create()
+    raw_image = RawImage(case_request=case_request)
+    
+    # Check if DICOM
+    is_dicom = uploaded_file.name.lower().endswith('.dcm')
+    
+    try:
+        if is_dicom:
+            DicomFile.objects.create(
+                case_request=case_request,
+                file=uploaded_file,
+                original_filename=uploaded_file.name,
+                file_size=uploaded_file.size
+            )
+            
+            uploaded_file.seek(0)
+            pil_image = convert_dicom_to_image(uploaded_file)
+            
+            img_buffer = io.BytesIO()
+            pil_image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            
+            file_content = ContentFile(img_buffer.getvalue())
+            new_filename = os.path.splitext(uploaded_file.name)[0] + ".png"
+            
+            raw_image.image.save(new_filename, file_content, save=False)
+            raw_image.original_filename = uploaded_file.name
+            raw_image.content_type = 'image/png'
+            raw_image.file_size = len(img_buffer.getvalue())
+            raw_image.width = pil_image.width
+            raw_image.height = pil_image.height
+            
+            file_data = img_buffer.getvalue()
+            content_type_for_api = 'image/png'
+            filename_for_api = new_filename
+        else:
+            raw_image.image = uploaded_file
+            raw_image.original_filename = uploaded_file.name
+            raw_image.content_type = uploaded_file.content_type
+            raw_image.file_size = uploaded_file.size
+            
+            try:
+                img = Image.open(uploaded_file)
+                raw_image.width, raw_image.height = img.size
+            except Exception:
+                pass
+            
+            uploaded_file.seek(0)
+            file_data = uploaded_file.read()
+            content_type_for_api = uploaded_file.content_type
+            filename_for_api = uploaded_file.name
+        
+        raw_image.save()
+        case_request.success_upload = True
+        case_request.save()
+        
+        # Return immediately with case ID, processing happens async
+        # For sync processing (current behavior), process both profiles
+        all_errors = []
+        
+        success_v3, errors_v3 = process_profile_workflow(
+            case_request, profile_v3, raw_image, file_data, filename_for_api, content_type_for_api
+        )
+        if errors_v3:
+            all_errors.extend([f"[v3.5.1] {e}" for e in errors_v3])
+        
+        success_v4, errors_v4 = process_profile_workflow(
+            case_request, profile_v4, raw_image, file_data, filename_for_api, content_type_for_api
+        )
+        if errors_v4:
+            all_errors.extend([f"[v4.5.0] {e}" for e in errors_v4])
+        
+        case_request.success_process = success_v3 and success_v4
+        case_request.save()
+        
+        return JsonResponse({
+            'request_id': str(case_request.request_id),
+            'success': case_request.success_process,
+            'errors': all_errors if all_errors else None,
+        })
+        
+    except Exception as e:
+        logger.exception("Error processing upload")
+        return JsonResponse({'error': str(e)}, status=500)

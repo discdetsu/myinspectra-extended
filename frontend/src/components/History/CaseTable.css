@@ -1,0 +1,43 @@
+.case-table th {
+    background: var(--color-bg-tertiary);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.cell-name {
+    font-weight: 500;
+    color: var(--color-text-primary);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cell-muted {
+    color: var(--color-text-muted);
+}
+
+.cell-date {
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+}
+
+.tags-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+}
+
+.view-btn {
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--font-size-xs);
+}
+
+.skeleton-row td {
+    padding: var(--space-md);
+}
+
+.skeleton-row .skeleton {
+    display: inline-block;
+}

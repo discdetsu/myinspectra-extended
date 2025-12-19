@@ -1,8 +1,10 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Image Upload Test</title>
 </head>
+
 <body>
     <h1>Image Upload Test</h1>
     <p>Upload an X-ray image to test the RawImage model and media storage.</p>
@@ -10,7 +12,7 @@
     <form method="post" enctype="multipart/form-data" class="upload-form">
         {% csrf_token %}
         <h3>Select Image File</h3>
-        <input type="file" name="image" accept="image/*" required>
+        <input type="file" name="image" accept="image/*, .dcm" required>
         <br>
 
         <br>
@@ -20,4 +22,5 @@
     <hr>
     <p><a href="/admin/">Go to Admin Panel</a> to view uploaded images</p>
 </body>
+
 </html>

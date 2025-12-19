@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile  
+from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile  
 
 # Configure admin site headers and titles
 admin.site.site_header = "MyInspectra Admin"
@@ -142,4 +142,18 @@ class OverlayHeatmapAdmin(admin.ModelAdmin):
             return obj.overlay_image.url
         return "No overlay image"
     overlay_image_url.short_description = 'Overlay Image URL'
+
+
+@admin.register(DicomFile)
+class DicomFileAdmin(admin.ModelAdmin):
+    list_display = ['case_request', 'file', 'original_filename', 'file_size', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['case_request__request_id', 'original_filename']
+    readonly_fields = ['created_at', 'file_url']
+
+    def file_url(self, obj):
+        if obj.file:
+            return obj.file.url
+        return "No file"
+    file_url.short_description = 'File URL'
 

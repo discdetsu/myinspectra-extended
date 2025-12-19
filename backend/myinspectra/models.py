@@ -26,6 +26,12 @@ def overlay_heatmap_upload_path(instance, filename):
     return f'overlay_heatmaps/{case_id}/{filename}'
 
 
+def dicom_upload_path(instance, filename):
+    """Generate upload path for dicom files"""
+    case_id = instance.case_request.request_id
+    return f'dicom/{case_id}/{filename}'
+
+
 class CXRModel(models.Model):
     """Store information about different AI models"""
 
@@ -111,6 +117,21 @@ class RawImage(models.Model):
 
     def __str__(self):
         return str(self.case_request.request_id)
+
+
+class DicomFile(models.Model):
+    """Store uploaded DICOM files"""
+    case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='dicom_files')
+    file = models.FileField(upload_to=dicom_upload_path)
+    
+    # Metadata
+    original_filename = models.CharField(max_length=255, blank=True)
+    file_size = models.BigIntegerField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DICOM - {self.case_request.request_id}"
 
 
 class Prediction(models.Model):

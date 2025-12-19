@@ -27,7 +27,7 @@ docker-compose up
 
 ## Tech Stack
 
-- **Frontend**: React 19, TypeScript, Vite, TailwindCSS
+- **Frontend**: React, TypeScript, Vite
 - **Backend**: Django 5.2, PostgreSQL
 - **AI Services**: FastAPI
 - **Storage**: MinIO
