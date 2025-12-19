@@ -5,15 +5,25 @@ export interface Condition {
     thresholded: string;
 }
 
+export interface ResultItem {
+    name: string;
+    score: string | null;
+    status: 'positive' | 'low' | 'none';
+}
+
+export interface VersionSummary {
+    results: ResultItem[];
+    conditions: Condition[];
+}
+
 export interface CaseListItem {
     request_id: string;
     created_at: string;
     patient_name: string;
     raw_image_url: string | null;
     success_process: boolean;
-    abnormality_score: string | null;
-    tuberculosis_score: string | null;
-    conditions: Condition[];
+    v3: VersionSummary;
+    v4: VersionSummary;
 }
 
 export interface CaseListResponse {

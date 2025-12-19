@@ -214,6 +214,10 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
             for pred in predictions:
                 if pred.disease_name in low_threshold_diseases:
                     continue
+                
+                # Exclude Cardiomegaly from heatmap processing (uses separate CTR service)
+                if pred.disease_name == 'Cardiomegaly':
+                    continue
 
                 if hasattr(pred, 'heatmap') and pred.heatmap.heatmap_image:
                     # Get temp path (downloads if S3)
@@ -557,17 +561,69 @@ def api_case_list(request):
     paginator = Paginator(cases, page_size)
     page_obj = paginator.get_page(page)
     
-    case_list = []
-    for case in page_obj:
-        # Get associated raw image
-        raw_image = RawImage.objects.filter(case_request=case).first()
+    # Define disease groups
+    TB_DISEASES = ['Tuberculosis', 'Inspectra Lung Opacity v2']
+    ABNORMALITY_DISEASES = ['Pneumothorax', 'Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity']
+    
+    def get_version_summary(predictions):
+        """Get summary for a specific model version's predictions"""
+        # Tuberculosis: check if TB or Inspectra Lung Opacity v2 is positive
+        tb_preds = [p for p in predictions if p.disease_name in TB_DISEASES]
+        tb_positive = any(p.thresholded_percentage != 'Low' for p in tb_preds)
+        tb_score = None
+        tb_status = 'none'  # none, low, positive
+        if tb_preds:
+            for name in TB_DISEASES:
+                pred = next((p for p in predictions if p.disease_name == name), None)
+                if pred:
+                    if pred.thresholded_percentage != 'Low':
+                        tb_score = pred.thresholded_percentage
+                        tb_status = 'positive'
+                        break
+                    else:
+                        tb_status = 'low'
         
-        # Get predictions summary (abnormality and tuberculosis scores)
-        predictions = Prediction.objects.filter(case_request=case, model_version='v4.5.0')
-        abnormality_pred = predictions.filter(disease_name='Abnormality').first()
-        tb_pred = predictions.filter(disease_name='Tuberculosis').first()
+        # Pneumothorax
+        pneumo_pred = next((p for p in predictions if p.disease_name == 'Pneumothorax'), None)
+        pneumo_status = 'none'
+        pneumo_score = None
+        if pneumo_pred:
+            if pneumo_pred.thresholded_percentage != 'Low':
+                pneumo_status = 'positive'
+                pneumo_score = pneumo_pred.thresholded_percentage
+            else:
+                pneumo_status = 'low'
         
-        # Get all conditions with their thresholded values
+        # Abnormality: max score from remaining classes (excluding TB diseases and Pneumothorax)
+        abnormality_preds = [p for p in predictions if p.disease_name in ABNORMALITY_DISEASES and p.disease_name != 'Pneumothorax']
+        abnormality_positive = any(p.thresholded_percentage != 'Low' for p in abnormality_preds)
+        abnormality_status = 'none'
+        max_abnormality_score = None
+        if abnormality_preds:
+            if abnormality_positive:
+                abnormality_status = 'positive'
+                max_abnormality_value = 0
+                for p in abnormality_preds:
+                    if p.thresholded_percentage != 'Low':
+                        try:
+                            val = int(p.thresholded_percentage.replace('%', ''))
+                            if val > max_abnormality_value:
+                                max_abnormality_value = val
+                                max_abnormality_score = p.thresholded_percentage
+                        except:
+                            if max_abnormality_score is None:
+                                max_abnormality_score = p.thresholded_percentage
+            else:
+                abnormality_status = 'low'
+        
+        # Build results list (all 3 models with status)
+        results = [
+            {'name': 'Tuberculosis', 'score': tb_score, 'status': tb_status},
+            {'name': 'Pneumothorax', 'score': pneumo_score, 'status': pneumo_status},
+            {'name': 'Abnormality', 'score': max_abnormality_score, 'status': abnormality_status},
+        ]
+        
+        # Build conditions list (all non-Low predictions)
         conditions = []
         for pred in predictions:
             if pred.thresholded_percentage != 'Low':
@@ -576,15 +632,31 @@ def api_case_list(request):
                     'thresholded': pred.thresholded_percentage
                 })
         
+        return {
+            'results': results,
+            'conditions': conditions,
+        }
+    
+    case_list = []
+    for case in page_obj:
+        # Get associated raw image
+        raw_image = RawImage.objects.filter(case_request=case).first()
+        
+        # Get predictions for both versions
+        predictions_v3 = list(Prediction.objects.filter(case_request=case, model_version='v3.5.1'))
+        predictions_v4 = list(Prediction.objects.filter(case_request=case, model_version='v4.5.0'))
+        
+        v3_summary = get_version_summary(predictions_v3)
+        v4_summary = get_version_summary(predictions_v4)
+        
         case_list.append({
             'request_id': str(case.request_id),
             'created_at': case.created_at.isoformat(),
             'patient_name': raw_image.original_filename if raw_image else 'N/A',
             'raw_image_url': raw_image.image.url if raw_image and raw_image.image else None,
             'success_process': case.success_process,
-            'abnormality_score': abnormality_pred.thresholded_percentage if abnormality_pred else None,
-            'tuberculosis_score': tb_pred.thresholded_percentage if tb_pred else None,
-            'conditions': conditions,
+            'v3': v3_summary,
+            'v4': v4_summary,
         })
     
     return JsonResponse({

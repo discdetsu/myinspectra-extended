@@ -7,16 +7,9 @@ import './CasePreviewPage.css';
 type HeatmapVersion = 'raw' | 'v3.5.1' | 'v4.5.0';
 
 function getScoreColor(score: string): string {
-    const numericMatch = score.match(/\d+/);
-    if (numericMatch) {
-        const num = parseInt(numericMatch[0]);
-        if (num >= 70) return 'var(--color-error)';
-        if (num >= 40) return 'var(--color-warning)';
-        return 'var(--color-success)';
-    }
+    // Green only for 'Low', red for everything over threshold
     if (score.toLowerCase() === 'low') return 'var(--color-success)';
-    if (score.toLowerCase() === 'high') return 'var(--color-error)';
-    return 'var(--color-text-secondary)';
+    return 'var(--color-error)';
 }
 
 export function CasePreviewPage() {
@@ -108,15 +101,9 @@ export function CasePreviewPage() {
 
     const getCurrentPredictions = (): Prediction[] => {
         if (!caseData) return [];
-        return caseData.predictions['v4.5.0'] || [];
-    };
-
-    const getAbnormalityScore = (): Prediction | undefined => {
-        return getCurrentPredictions().find(p => p.disease_name === 'Abnormality');
-    };
-
-    const getTbScore = (): Prediction | undefined => {
-        return getCurrentPredictions().find(p => p.disease_name === 'Tuberculosis');
+        // For 'raw' view, show v4.5.0 predictions; otherwise show for selected version
+        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+        return caseData.predictions[version] || [];
     };
 
     if (isLoading) {
@@ -211,26 +198,70 @@ export function CasePreviewPage() {
                     </div>
 
                     <div className="summary-scores">
-                        {getAbnormalityScore() && (
-                            <div
-                                className="score-bar"
-                                style={{ background: getScoreColor(getAbnormalityScore()!.thresholded_percentage) }}
-                            >
-                                Abnormality {getAbnormalityScore()!.thresholded_percentage}
-                            </div>
-                        )}
-                        {getTbScore() && (
-                            <div
-                                className="score-bar tb"
-                                style={{
-                                    background: getTbScore()!.thresholded_percentage === 'Low'
-                                        ? 'var(--color-bg-active)'
-                                        : getScoreColor(getTbScore()!.thresholded_percentage)
-                                }}
-                            >
-                                Tuberculosis {getTbScore()!.thresholded_percentage}
-                            </div>
-                        )}
+                        {/* Abnormality */}
+                        {(() => {
+                            const abnormality = getCurrentPredictions().find(p =>
+                                ['Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity'].includes(p.disease_name)
+                            );
+                            const isPositive = abnormality && abnormality.thresholded_percentage !== 'Low';
+                            // Find max score if any positive
+                            let maxScore = 'Low';
+                            if (isPositive) {
+                                const positiveAbnormalities = getCurrentPredictions().filter(p =>
+                                    ['Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity'].includes(p.disease_name) &&
+                                    p.thresholded_percentage !== 'Low'
+                                );
+                                if (positiveAbnormalities.length > 0) {
+                                    let maxVal = 0;
+                                    for (const p of positiveAbnormalities) {
+                                        const val = parseInt(p.thresholded_percentage.replace('%', '')) || 0;
+                                        if (val > maxVal) {
+                                            maxVal = val;
+                                            maxScore = p.thresholded_percentage;
+                                        }
+                                    }
+                                }
+                            }
+                            return (
+                                <div
+                                    className="score-bar"
+                                    style={{ background: isPositive ? 'var(--color-error)' : 'var(--color-success)' }}
+                                >
+                                    Abnormality {isPositive ? maxScore : 'Low'}
+                                </div>
+                            );
+                        })()}
+
+                        {/* Tuberculosis */}
+                        {(() => {
+                            const tb = getCurrentPredictions().find(p =>
+                                ['Tuberculosis', 'Inspectra Lung Opacity v2'].includes(p.disease_name) &&
+                                p.thresholded_percentage !== 'Low'
+                            );
+                            const isPositive = !!tb;
+                            return (
+                                <div
+                                    className="score-bar"
+                                    style={{ background: isPositive ? 'var(--color-error)' : 'var(--color-success)' }}
+                                >
+                                    Tuberculosis {isPositive ? tb!.thresholded_percentage : 'Low'}
+                                </div>
+                            );
+                        })()}
+
+                        {/* Pneumothorax */}
+                        {(() => {
+                            const pneumo = getCurrentPredictions().find(p => p.disease_name === 'Pneumothorax');
+                            const isPositive = pneumo && pneumo.thresholded_percentage !== 'Low';
+                            return (
+                                <div
+                                    className="score-bar"
+                                    style={{ background: isPositive ? 'var(--color-error)' : 'var(--color-success)' }}
+                                >
+                                    Pneumothorax {isPositive ? pneumo!.thresholded_percentage : 'Low'}
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     <div className="conditions-table">

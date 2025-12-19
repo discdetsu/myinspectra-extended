@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import type { CaseListItem } from '../../types';
+import type { CaseListItem, VersionSummary } from '../../types';
 import './CaseTable.css';
 
 interface CaseTableProps {
@@ -20,18 +20,42 @@ function formatDate(isoString: string): string {
     });
 }
 
-function getScoreClass(score: string | null): string {
-    if (!score) return 'neutral';
-    const numericMatch = score.match(/\d+/);
-    if (numericMatch) {
-        const num = parseInt(numericMatch[0]);
-        if (num >= 70) return 'error';
-        if (num >= 40) return 'warning';
-        return 'success';
+function renderResults(summary: VersionSummary) {
+    // Check if all 3 models are 'none' (no data)
+    const allNone = summary.results.every(r => r.status === 'none');
+    if (allNone) {
+        return <span className="tag tag-neutral">N/A</span>;
     }
-    if (score.toLowerCase() === 'low') return 'success';
-    if (score.toLowerCase() === 'high') return 'error';
-    return 'neutral';
+
+    return (
+        <div className="tags-cell">
+            {summary.results.map((r, i) => {
+                if (r.status === 'none') return null;
+                const colorClass = r.status === 'positive' ? 'tag-error' : 'tag-success';
+                const label = r.status === 'positive' ? `${r.name} ${r.score}` : `${r.name} Low`;
+                return (
+                    <span key={i} className={`tag ${colorClass}`}>
+                        {label}
+                    </span>
+                );
+            })}
+        </div>
+    );
+}
+
+function renderConditions(summary: VersionSummary) {
+    if (summary.conditions.length === 0) {
+        return <span className="tag tag-neutral">N/A</span>;
+    }
+    return (
+        <div className="tags-cell">
+            {summary.conditions.map((c, i) => (
+                <span key={i} className="tag tag-error">
+                    {c.name}
+                </span>
+            ))}
+        </div>
+    );
 }
 
 export function CaseTable({ cases, isLoading }: CaseTableProps) {
@@ -41,8 +65,10 @@ export function CaseTable({ cases, isLoading }: CaseTableProps) {
                 <tr key={i} className="skeleton-row">
                     <td><div className="skeleton" style={{ height: 16, width: '80%' }} /></td>
                     <td><div className="skeleton" style={{ height: 16, width: 120 }} /></td>
+                    <td><div className="skeleton" style={{ height: 22, width: 80 }} /></td>
                     <td><div className="skeleton" style={{ height: 22, width: 100 }} /></td>
                     <td><div className="skeleton" style={{ height: 22, width: 80 }} /></td>
+                    <td><div className="skeleton" style={{ height: 22, width: 100 }} /></td>
                     <td><div className="skeleton" style={{ height: 28, width: 50 }} /></td>
                 </tr>
             ));
@@ -51,7 +77,7 @@ export function CaseTable({ cases, isLoading }: CaseTableProps) {
         if (cases.length === 0) {
             return (
                 <tr>
-                    <td colSpan={5}>
+                    <td colSpan={7}>
                         <div className="empty-state">
                             <div className="empty-state-icon">📋</div>
                             <div className="empty-state-title">No cases found</div>
@@ -66,32 +92,10 @@ export function CaseTable({ cases, isLoading }: CaseTableProps) {
             <tr key={caseItem.request_id}>
                 <td className="cell-name">{caseItem.patient_name}</td>
                 <td className="cell-date">{formatDate(caseItem.created_at)}</td>
-                <td>
-                    <div className="tags-cell">
-                        {caseItem.abnormality_score && (
-                            <span className={`tag tag-${getScoreClass(caseItem.abnormality_score)}`}>
-                                Abnormality {caseItem.abnormality_score}
-                            </span>
-                        )}
-                        {caseItem.tuberculosis_score && (
-                            <span className={`tag tag-${getScoreClass(caseItem.tuberculosis_score)}`}>
-                                Tuberculosis {caseItem.tuberculosis_score}
-                            </span>
-                        )}
-                    </div>
-                </td>
-                <td>
-                    <div className="tags-cell">
-                        {caseItem.conditions.map((c, i) => (
-                            <span key={i} className={`tag tag-${getScoreClass(c.thresholded)}`}>
-                                {c.name}
-                            </span>
-                        ))}
-                        {caseItem.conditions.length === 0 && (
-                            <span className="tag tag-neutral">N/A</span>
-                        )}
-                    </div>
-                </td>
+                <td>{renderResults(caseItem.v3)}</td>
+                <td>{renderConditions(caseItem.v3)}</td>
+                <td>{renderResults(caseItem.v4)}</td>
+                <td>{renderConditions(caseItem.v4)}</td>
                 <td>
                     <Link to={`/case/${caseItem.request_id}`} className="btn btn-ghost view-btn">
                         View
@@ -108,8 +112,10 @@ export function CaseTable({ cases, isLoading }: CaseTableProps) {
                     <tr>
                         <th>File Name ↕</th>
                         <th>Study Date / Time ↕</th>
-                        <th>Result ↕</th>
-                        <th>Condition / Disease ↕</th>
+                        <th>Result v3.5.1 ↕</th>
+                        <th>Condition v3.5.1 ↕</th>
+                        <th>Result v4.5.0 ↕</th>
+                        <th>Condition v4.5.0 ↕</th>
                         <th></th>
                     </tr>
                 </thead>

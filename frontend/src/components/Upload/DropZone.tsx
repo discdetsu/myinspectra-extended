@@ -112,7 +112,7 @@ export function DropZone({ onFileSelect, isUploading, accept = 'image/*,.dcm' }:
             <div className="dropzone-footer">
                 <div className="supported-types">
                     <span className="label">Supported file types:</span>
-                    <span className="types">.dcm · .jpg · .jpeg · .png · .JPG · .JPEG · .PNG</span>
+                    <span className="types">.dcm .jpg .jpeg .png .JPG .JPEG .PNG</span>
                 </div>
 
                 {selectedFile && (
