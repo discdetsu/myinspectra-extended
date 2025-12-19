@@ -1,16 +1,19 @@
 services:
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - CHOKIDAR_USEPOLLING=true
-  #   depends_on:
-  #     - backend
-  #   networks:
-  #     - backend
+  frontend:
+    image: myinspectra-frontend:1.0.0
+    container_name: myinspectra_frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://hydra.perceptra.tech:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - backend
 
   backend:
     container_name: myinspectra_django
@@ -50,8 +53,10 @@ services:
       - LUNG_SEG_URL=${LUNG_SEG_URL}
       - PNEUMOTHORAX_SEG_VERSION=${PNEUMOTHORAX_SEG_VERSION}
       - PNEUMOTHORAX_SEG_URL=${PNEUMOTHORAX_SEG_URL}
-    volumes:
-      - /home/perceptra-hydra/submarine-project-code/myinspectra-extended/backend/:/app/
+    # Volume mount disabled for production (overwrites container's .venv)
+    # Uncomment for development: 
+    # volumes:
+    #   - /home/perceptra-hydra/submarine-project-code/myinspectra-extended/backend/:/app/
 
   abnormality_v3:
     image: abnormality:3.5.1
