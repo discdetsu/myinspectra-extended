@@ -1,6 +1,9 @@
 import { useCallback, useState } from 'react';
 import './DropZone.css';
 
+import uploadIconPng from '../../assets/image-upload.png';
+import fileIconPng from '../../assets/img.png';
+
 interface DropZoneProps {
     onFileSelect: (file: File) => void;
     isUploading: boolean;
@@ -44,8 +47,6 @@ export function DropZone({ onFileSelect, isUploading, accept = 'image/*,.dcm' }:
 
     const handleFile = (file: File) => {
         setSelectedFile(file);
-
-        // Create preview for image files
         if (file.type.startsWith('image/')) {
             const reader = new FileReader();
             reader.onload = (e) => {
@@ -81,7 +82,9 @@ export function DropZone({ onFileSelect, isUploading, accept = 'image/*,.dcm' }:
                         {previewUrl ? (
                             <img src={previewUrl} alt="Preview" className="preview-image" loading="lazy" />
                         ) : (
-                            <div className="file-icon">📄</div>
+                            <div className="file-icon">
+                                <img src={fileIconPng} alt="File" className="icon-img" />
+                            </div>
                         )}
                         <div className="file-info">
                             <span className="file-name">{selectedFile.name}</span>
@@ -100,7 +103,9 @@ export function DropZone({ onFileSelect, isUploading, accept = 'image/*,.dcm' }:
                             className="file-input"
                             disabled={isUploading}
                         />
-                        <div className="dropzone-icon">📤</div>
+                        <div className="dropzone-icon">
+                            <img src={uploadIconPng} alt="Upload" className="icon-img-lg" />
+                        </div>
                         <div className="dropzone-text">
                             <span className="dropzone-title">Drop files here to upload</span>
                             <span className="dropzone-hint">or click to browse</span>

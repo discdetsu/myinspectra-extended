@@ -32,30 +32,30 @@ cd myinspectra-extended
 cp .env.sample .env
 
 # Edit .env with your settings (Django admin, MinIO credentials, etc.)
-nano .env
+vim .env
 ```
 
 ### 2. Build Images
 
 ```bash
 # Build all services
-docker-compose build
+docker compose build
 
 # Or build specific services
-docker-compose build frontend backend
+docker compose build frontend backend
 ```
 
 ### 3. Start Core Services
 
 ```bash
 # Start database and storage first
-docker-compose up -d db minio createbuckets
+docker compose up -d db minio createbuckets
 
 # Wait a few seconds for services to initialize, then start backend
-docker-compose up -d backend
+docker compose up -d backend
 
 # Start frontend
-docker-compose up -d frontend
+docker compose up -d frontend
 ```
 
 ### 4. Initialize Django
@@ -76,8 +76,8 @@ docker exec myinspectra_django uv run python scripts/populate_db.py
 
 ```bash
 # Start all AI prediction and segmentation services
-docker-compose up -d abnormality_v3 abnormality_v4 tuberculosis pneumothorax
-docker-compose up -d pleural_effusion_segmentation lung_segmentation pneumothorax_segmentation
+docker compose up -d abnormality_v3 abnormality_v4 tuberculosis pneumothorax
+docker compose up -d pleural_effusion_segmentation lung_segmentation pneumothorax_segmentation
 ```
 
 ### 6. Access the Application
@@ -119,15 +119,15 @@ docker logs -f myinspectra_django
 docker logs -f myinspectra_frontend
 
 # Restart services
-docker-compose restart backend frontend
+docker compose restart backend frontend
 
 # Stop all services
-docker-compose down
+docker compose down
 
 # Reset database (WARNING: deletes all data)
-docker-compose down -v
+docker compose down -v
 rm -rf .database
-docker-compose up -d
+docker compose up -d
 ```
 
 ---

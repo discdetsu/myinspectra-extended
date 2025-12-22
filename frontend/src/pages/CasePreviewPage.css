@@ -313,3 +313,25 @@
         min-height: 300px;
     }
 }
+
+/* Export PDF Button */
+.export-pdf-btn {
+    margin-top: var(--space-md);
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+}
+
+.export-pdf-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.export-pdf-btn .spinner {
+    border-width: 2px;
+}

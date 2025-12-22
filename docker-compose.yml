@@ -10,10 +10,17 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: always
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:80" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   backend:
     container_name: myinspectra_django
@@ -23,22 +30,39 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/cases/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     environment:
-      - DB_HOST=db
-      - DB_NAME=myinspectra_db
-      - DB_USER=postgres
-      - DB_PASSWORD=password
-      - DB_PORT=5432
+      # Django Security
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - DEBUG=${DEBUG:-false}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      # Database
+      - DB_HOST=${DB_HOST}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT}
+      # Django Admin
       - DJANGO_ADMIN_USERNAME=${DJANGO_ADMIN_USERNAME}
       - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD}
+      # MinIO Storage
       - MINIO_ENDPOINT_URL=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME}
-      - MINIO_PUBLIC_DOMAIN=192.168.101.204:9000/${MINIO_BUCKET_NAME}
+      - MINIO_PUBLIC_DOMAIN=${MINIO_PUBLIC_DOMAIN}
+      # AI Services
       - ABNORMALITY_V3_VERSION=${ABNORMALITY_V3_VERSION}
       - ABNORMALITY_V3_URL=${ABNORMALITY_V3_URL}
       - ABNORMALITY_V4_VERSION=${ABNORMALITY_V4_VERSION}
@@ -153,15 +177,21 @@ services:
     image: postgres:18
     container_name: myinspectra_db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: myinspectra_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
       - .database:/var/lib/postgresql/18/docker
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   minio:
     image: minio/minio
@@ -177,6 +207,12 @@ services:
       - minio_data:/data
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   createbuckets:
     image: minio/mc

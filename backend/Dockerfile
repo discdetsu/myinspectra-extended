@@ -12,7 +12,8 @@ RUN apt update -y && \
     libsm6 \
     libxext6 \
     libxrender1 \
-    ffmpeg && \
+    ffmpeg \
+    curl && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -34,4 +35,6 @@ RUN uv run python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Use Gunicorn for production (run via uv)
-CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "backend.wsgi:application"]
+# --access-logfile - : logs HTTP requests to stdout
+# --error-logfile - : logs errors to stderr
+CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "backend.wsgi:application"]

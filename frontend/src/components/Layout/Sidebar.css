@@ -38,8 +38,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, var(--color-accent), #5f9ee9);
-    border-radius: var(--radius-md);
+    background: #ffffff;
+    border-radius: 100%;
 }
 
 .logo-text {
@@ -79,13 +79,20 @@
 }
 
 .nav-icon {
-    font-size: 16px;
-    width: 20px;
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .nav-label {
     font-weight: 500;
+}
+
+.custom-icon {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    display: block;
 }
 
 .sidebar-footer {

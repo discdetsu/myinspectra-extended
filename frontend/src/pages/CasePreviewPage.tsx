@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { fetchCaseDetail } from '../services/api';
+import { generatePdfReport, revokePdfUrl } from '../utils/pdfExport';
+import { PdfPreviewModal } from '../components/PdfPreviewModal';
 import type { CaseDetail, Prediction } from '../types';
 import './CasePreviewPage.css';
 
@@ -18,6 +20,12 @@ export function CasePreviewPage() {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selectedVersion, setSelectedVersion] = useState<HeatmapVersion>('v4.5.0');
+
+    // PDF export state
+    const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+    const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+    const [pdfFilename, setPdfFilename] = useState('');
+    const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
     // Zoom and pan state
     const [scale, setScale] = useState(1);
@@ -104,6 +112,43 @@ export function CasePreviewPage() {
         // For 'raw' view, show v4.5.0 predictions; otherwise show for selected version
         const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
         return caseData.predictions[version] || [];
+    };
+
+    // PDF export handler
+    const handleExportPdf = async () => {
+        if (!caseData) return;
+
+        setIsGeneratingPdf(true);
+        try {
+            // Clean up previous PDF URL if exists
+            if (pdfUrl) {
+                revokePdfUrl(pdfUrl);
+            }
+
+            const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+            const predictions = caseData.predictions[version] || [];
+
+            const result = await generatePdfReport({
+                caseData,
+                selectedVersion: version,
+                predictions,
+            });
+
+            setPdfUrl(result.blobUrl);
+            setPdfFilename(result.filename);
+            setIsPdfModalOpen(true);
+        } catch (error) {
+            console.error('Failed to generate PDF:', error);
+            alert('Failed to generate PDF report. Please try again.');
+        } finally {
+            setIsGeneratingPdf(false);
+        }
+    };
+
+    const handleClosePdfModal = () => {
+        setIsPdfModalOpen(false);
+        // Note: We don't revoke the URL here to allow re-opening the preview
+        // The URL will be revoked when generating a new PDF or when component unmounts
     };
 
     if (isLoading) {
@@ -270,7 +315,8 @@ export function CasePreviewPage() {
                             <span>CONFIDENCE SCORE</span>
                         </div>
                         {getCurrentPredictions()
-                            .filter(p => !['Abnormality', 'Tuberculosis'].includes(p.disease_name))
+                            .filter(p => !['Abnormality', 'Tuberculosis', 'Pneumothorax', 'Inspectra Lung Opacity v2'].includes(p.disease_name))
+                            .sort((a, b) => a.disease_name.localeCompare(b.disease_name))
                             .map((pred) => (
                                 <div key={pred.disease_name} className="condition-row">
                                     <span
@@ -318,8 +364,32 @@ export function CasePreviewPage() {
                             </span>
                         </div>
                     </div>
+
+                    <button
+                        className="btn btn-primary export-pdf-btn"
+                        onClick={handleExportPdf}
+                        disabled={isGeneratingPdf || selectedVersion === 'raw'}
+                    >
+                        {isGeneratingPdf ? (
+                            <>
+                                <span className="spinner" style={{ width: 14, height: 14 }} />
+                                Generating...
+                            </>
+                        ) : (
+                            <>
+                                <span>📄</span> Export PDF
+                            </>
+                        )}
+                    </button>
                 </aside>
             </div>
+
+            <PdfPreviewModal
+                isOpen={isPdfModalOpen}
+                pdfUrl={pdfUrl}
+                filename={pdfFilename}
+                onClose={handleClosePdfModal}
+            />
         </div>
     );
 }

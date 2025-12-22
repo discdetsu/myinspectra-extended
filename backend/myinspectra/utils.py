@@ -3,7 +3,7 @@ import os
 import pydicom
 import shutil
 import numpy as np
-from pydicom.pixel_data_handlers.util import convert_color_space
+from pydicom.pixels import convert_color_space
 import tempfile
 import logging
 from PIL import Image

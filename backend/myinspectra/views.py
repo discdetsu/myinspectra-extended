@@ -21,6 +21,38 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# Constants and Helpers
+# =============================================================================
+
+# File upload validation
+ALLOWED_IMAGE_TYPES = {'image/png', 'image/jpeg', 'image/jpg'}
+ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.dcm'}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+def api_error_response(message: str, status: int = 400, details: dict = None) -> JsonResponse:
+    """Standardized error response for API endpoints."""
+    response_data = {'error': message}
+    if details:
+        response_data['details'] = details
+    return JsonResponse(response_data, status=status)
+
+def validate_uploaded_file(file) -> tuple[bool, str]:
+    """Validate uploaded file. Returns (is_valid, error_message)."""
+    if not file:
+        return False, "No file provided"
+    
+    # Check file size
+    if file.size > MAX_FILE_SIZE:
+        return False, f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"
+    
+    # Check extension
+    ext = os.path.splitext(file.name)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return False, f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+    
+    return True, ""
+
 def call_prediction_api(url, file_data, filename, content_type, data):
     files = {'file': (filename, file_data, content_type)}
     try:
@@ -31,7 +63,7 @@ def call_prediction_api(url, file_data, filename, content_type, data):
         logger.error(f"Error calling {url}: {e}")
         return {'error': str(e)}
 
-def save_heatmap(prediction, heatmap_b64):
+def save_heatmap(prediction, heatmap_b64, model_version='v4.5.0'):
     if not heatmap_b64:
         return
     try:
@@ -50,7 +82,9 @@ def save_heatmap(prediction, heatmap_b64):
                 'file_size': len(heatmap_data),
             }
         )
-        heatmap.heatmap_image.save("heatmap.png", ContentFile(img_buffer.getvalue()), save=True)
+        # Include version as subdirectory to prevent overwriting
+        filename = f"heatmaps/{model_version}/heatmap.png"
+        heatmap.heatmap_image.save(filename, ContentFile(img_buffer.getvalue()), save=True)
     except Exception as e:
         logger.error(f"Error saving heatmap: {e}")
 
@@ -68,7 +102,7 @@ def process_prediction_result(case_request, result_data, model_version):
                 'thresholded_percentage': values.get('thresholded', '0%'),
             }
         )
-        save_heatmap(prediction, values.get('heatmap', ''))
+        save_heatmap(prediction, values.get('heatmap', ''), model_version)
 
 def process_segmentation_result(case_request, result_data, model_version):
     if not result_data or 'heatmap' not in result_data:
@@ -95,7 +129,10 @@ def process_segmentation_result(case_request, result_data, model_version):
                     'file_size': len(segment_data),
                 }
             )
-            segment.segment_image.save("segment.png", ContentFile(img_buffer.getvalue()), save=True)
+            # Include version as subdirectory to prevent overwriting
+            safe_class_name = class_name.replace(' ', '_').lower()
+            filename = f"segments/{model_version}/{safe_class_name}_segment.png"
+            segment.segment_image.save(filename, ContentFile(img_buffer.getvalue()), save=True)
         except Exception as e:
             logger.error(f"Error saving segment for {class_name}: {e}")
 
@@ -318,26 +355,6 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
             if 'temp_manager' in locals():
                 temp_manager.cleanup()
 
-            if result is not None and os.path.exists(output_path):
-                # 4. Save to OverlayHeatmap model
-                with open(output_path, 'rb') as f:
-                    overlay_content = f.read()
-                    
-                overlay, _ = OverlayHeatmap.objects.update_or_create(
-                    case_request=case_request,
-                    version=version_key,
-                    defaults={
-                        'width': raw_image.width,
-                        'height': raw_image.height,
-                        'file_size': len(overlay_content)
-                    }
-                )
-                # Save with a unique name including version
-                overlay.overlay_image.save(f"overlay_heatmap_{version_key}.png", ContentFile(overlay_content), save=True)
-                
-                os.remove(output_path)
-                return True, errors
-
     except Exception as e:
         msg = f"Error in overlay generation for {profile.name}: {e}"
         logger.error(msg)
@@ -549,9 +566,20 @@ def api_case_list(request):
     Returns paginated list of cases for history table.
     Query params: page, page_size, search
     """
-    page = int(request.GET.get('page', 1))
-    page_size = int(request.GET.get('page_size', 10))
-    search = request.GET.get('search', '')
+    # Input validation for pagination
+    try:
+        page = int(request.GET.get('page', 1))
+        page = max(1, page)  # Ensure page is at least 1
+    except (ValueError, TypeError):
+        page = 1
+    
+    try:
+        page_size = int(request.GET.get('page_size', 10))
+        page_size = max(1, min(100, page_size))  # Clamp between 1 and 100
+    except (ValueError, TypeError):
+        page_size = 10
+    
+    search = request.GET.get('search', '').strip()
     
     cases = CaseRequest.objects.filter(success_upload=True).order_by('-created_at')
     
@@ -610,7 +638,8 @@ def api_case_list(request):
                             if val > max_abnormality_value:
                                 max_abnormality_value = val
                                 max_abnormality_score = p.thresholded_percentage
-                        except:
+                        except ValueError:
+                            # Couldn't parse percentage, use as fallback
                             if max_abnormality_score is None:
                                 max_abnormality_score = p.thresholded_percentage
             else:
@@ -729,9 +758,14 @@ def api_upload(request):
     Upload an image and process it. Returns the case ID for redirect.
     """
     if 'image' not in request.FILES:
-        return JsonResponse({'error': 'No image file provided'}, status=400)
+        return api_error_response('No image file provided')
     
     uploaded_file = request.FILES['image']
+    
+    # Validate uploaded file
+    is_valid, error_msg = validate_uploaded_file(uploaded_file)
+    if not is_valid:
+        return api_error_response(error_msg)
     
     # Find profiles
     profile_v3 = PredictionProfile.objects.filter(name__icontains="v3.5.1", is_active=True).first()
