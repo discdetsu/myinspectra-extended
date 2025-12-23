@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile  
+from .models import CXRModel, RawImage, CaseRequest, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile, ProcessedHeatmap
 
 # Configure admin site headers and titles
 admin.site.site_header = "MyInspectra Admin"
@@ -157,3 +157,16 @@ class DicomFileAdmin(admin.ModelAdmin):
         return "No file"
     file_url.short_description = 'File URL'
 
+
+@admin.register(ProcessedHeatmap)
+class ProcessedHeatmapAdmin(admin.ModelAdmin):
+    list_display = ['case_request', 'disease_name', 'model_version', 'heatmap_image', 'width', 'height', 'file_size', 'created_at']
+    list_filter = ['disease_name', 'model_version', 'created_at']
+    search_fields = ['case_request__request_id', 'disease_name']
+    readonly_fields = ['created_at', 'updated_at', 'heatmap_image_url']
+
+    def heatmap_image_url(self, obj):
+        if obj.heatmap_image:
+            return obj.heatmap_image.url
+        return "No heatmap image"
+    heatmap_image_url.short_description = 'Heatmap Image URL'

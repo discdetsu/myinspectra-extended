@@ -7,7 +7,7 @@ from django.core.paginator import Paginator
 import json
 import io
 import concurrent.futures
-from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile
+from .models import RawImage, CaseRequest, CXRModel, Prediction, Heatmap, Segment, OverlayHeatmap, PredictionProfile, DicomFile, ProcessedHeatmap
 from .heatmap_orchestrate.main import HeatmapOverlayProcessor
 from .heatmap_orchestrate.config import HeatmapConfig, InspectraImageOverlayConfig
 from .utils import TempFileManager, convert_dicom_to_image
@@ -318,7 +318,8 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
                         heatmap_settings=heatmap_settings,
                         convex_lung_mask_path=lung_convex_mask_path,
                         save_processed_heatmaps=False,
-                        processed_heatmap_output_dir="example_output"
+                        processed_heatmap_output_dir="example_output",
+                        generate_individual_overlays=True,
                     )
                 else:
                     result = processor.process_from_files(
@@ -329,7 +330,8 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
                         output_path=output_path,
                         mode="color",
                         fallback_heatmap_paths=fallback_heatmap_paths,
-                        save_processed_heatmaps=False
+                        save_processed_heatmaps=False,
+                        generate_individual_overlays=True,
                     )
 
                 if result is not None and os.path.exists(output_path):
@@ -350,6 +352,40 @@ def process_profile_workflow(case_request, profile, raw_image, file_data, filena
                     overlay.overlay_image.save(f"overlay_heatmap_{version_key}.png", ContentFile(overlay_content), save=True)
                     
                     os.remove(output_path)
+                    
+                    # 5. Save individual heatmap overlays for each positive disease
+                    # These are generated with proper processing (watershed/blur/gamma) by the processor
+                    if isinstance(result, dict) and 'individual_overlays' in result:
+                        import cv2
+                        
+                        individual_overlays = result['individual_overlays']
+                        for disease_name, overlay_img in individual_overlays.items():
+                            try:
+                                # Encode image as PNG
+                                success, encoded_img = cv2.imencode('.png', overlay_img)
+                                if success:
+                                    img_content = encoded_img.tobytes()
+                                    
+                                    processed_heatmap, _ = ProcessedHeatmap.objects.update_or_create(
+                                        case_request=case_request,
+                                        disease_name=disease_name,
+                                        model_version=version_key,
+                                        defaults={
+                                            'width': overlay_img.shape[1],
+                                            'height': overlay_img.shape[0],
+                                            'file_size': len(img_content)
+                                        }
+                                    )
+                                    safe_disease_name = disease_name.lower().replace(' ', '_')
+                                    processed_heatmap.heatmap_image.save(
+                                        f"{safe_disease_name}_overlay.png",
+                                        ContentFile(img_content),
+                                        save=True
+                                    )
+                                    logger.info(f"Saved individual heatmap for {disease_name} ({version_key})")
+                            except Exception as e:
+                                logger.warning(f"Failed to save individual heatmap for {disease_name}: {e}")
+                    
                     return True, errors
         finally:
             if 'temp_manager' in locals():
@@ -735,6 +771,21 @@ def api_case_detail(request, request_id):
             'height': overlay.height,
         }
     
+    # Get individual processed heatmaps for positive diseases
+    individual_heatmaps = {}
+    for version in ['v3.5.1', 'v4.5.0']:
+        processed_heatmaps = ProcessedHeatmap.objects.filter(
+            case_request=case, 
+            model_version=version
+        )
+        individual_heatmaps[version] = [
+            {
+                'disease_name': ph.disease_name,
+                'url': ph.heatmap_image.url if ph.heatmap_image else None,
+            }
+            for ph in processed_heatmaps
+        ]
+    
     return JsonResponse({
         'request_id': str(case.request_id),
         'created_at': case.created_at.isoformat(),
@@ -747,6 +798,7 @@ def api_case_detail(request, request_id):
         },
         'predictions': predictions_data,
         'overlays': overlays,
+        'individual_heatmaps': individual_heatmaps,
     })
 
 

@@ -222,3 +222,36 @@ class OverlayHeatmap(models.Model):
     def __str__(self):
         return f"{self.case_request.request_id} - {self.version}"
 
+
+def processed_heatmap_upload_path(instance, filename):
+    """Generate upload path for processed heatmap overlay images"""
+    case_id = instance.case_request.request_id
+    disease_slug = instance.disease_name.lower().replace(' ', '_')
+    return f'processed_heatmaps/{case_id}/{instance.model_version}/{disease_slug}_{filename}'
+
+
+class ProcessedHeatmap(models.Model):
+    """Store individual jet colormap overlay images for each disease per model version.
+    
+    These are NOT grayscale heatmaps - they are RGB images with jet colormap 
+    applied and blended with the raw X-ray image.
+    """
+    case_request = models.ForeignKey(CaseRequest, on_delete=models.CASCADE, related_name='processed_heatmaps')
+    disease_name = models.CharField(max_length=100)
+    model_version = models.CharField(max_length=20, default='v4.5.0')
+    heatmap_image = models.ImageField(upload_to=processed_heatmap_upload_path)
+    
+    # Image metadata
+    width = models.IntegerField(null=True, blank=True)
+    height = models.IntegerField(null=True, blank=True)
+    file_size = models.BigIntegerField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ['case_request', 'disease_name', 'model_version']
+
+    def __str__(self):
+        return f"{self.case_request.request_id} - {self.disease_name} ({self.model_version})"

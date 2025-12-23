@@ -68,6 +68,15 @@ export interface CaseDetail {
         'v3.5.1'?: Overlay;
         'v4.5.0'?: Overlay;
     };
+    individual_heatmaps: {
+        'v3.5.1': IndividualHeatmap[];
+        'v4.5.0': IndividualHeatmap[];
+    };
+}
+
+export interface IndividualHeatmap {
+    disease_name: string;
+    url: string | null;
 }
 
 export interface UploadResponse {

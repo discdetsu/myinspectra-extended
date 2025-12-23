@@ -20,6 +20,7 @@ export function CasePreviewPage() {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selectedVersion, setSelectedVersion] = useState<HeatmapVersion>('v4.5.0');
+    const [selectedDisease, setSelectedDisease] = useState<string | null>(null);
 
     // PDF export state
     const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
@@ -52,6 +53,11 @@ export function CasePreviewPage() {
 
         loadCase();
     }, [requestId]);
+
+    // Reset selected disease when version changes
+    useEffect(() => {
+        setSelectedDisease(null);
+    }, [selectedVersion]);
 
     // Zoom controls
     const handleZoomIn = useCallback(() => {
@@ -104,7 +110,42 @@ export function CasePreviewPage() {
     const getCurrentImageUrl = (): string | null => {
         if (!caseData) return null;
         if (selectedVersion === 'raw') return caseData.raw_image.url;
+
+        // If a disease is selected, show individual heatmap
+        if (selectedDisease && caseData.individual_heatmaps) {
+            const individualHeatmaps = caseData.individual_heatmaps[selectedVersion] || [];
+            const match = individualHeatmaps.find(h => h.disease_name === selectedDisease);
+            if (match?.url) return match.url;
+        }
+
         return caseData.overlays[selectedVersion]?.url || caseData.raw_image.url;
+    };
+
+    // Get list of diseases that have individual heatmaps available
+    const getClickableDiseases = (): Set<string> => {
+        if (!caseData?.individual_heatmaps) return new Set();
+        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+        const heatmaps = caseData.individual_heatmaps[version] || [];
+        return new Set(heatmaps.map(h => h.disease_name));
+    };
+
+    // Handle disease click for toggling individual heatmap
+    const handleDiseaseClick = (diseaseName: string, isPositive: boolean) => {
+        if (!isPositive) return;
+        const clickable = getClickableDiseases();
+        if (!clickable.has(diseaseName)) return;
+
+        // Toggle selection
+        if (selectedDisease === diseaseName) {
+            setSelectedDisease(null);
+        } else {
+            setSelectedDisease(diseaseName);
+        }
+    };
+
+    // Reset to overlay view
+    const handleResetHeatmap = () => {
+        setSelectedDisease(null);
     };
 
     const getCurrentPredictions = (): Prediction[] => {
@@ -245,25 +286,22 @@ export function CasePreviewPage() {
                     <div className="summary-scores">
                         {/* Abnormality */}
                         {(() => {
-                            const abnormality = getCurrentPredictions().find(p =>
-                                ['Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity'].includes(p.disease_name)
+                            const abnormalityClasses = ['Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity'];
+                            const positiveAbnormalities = getCurrentPredictions().filter(p =>
+                                abnormalityClasses.includes(p.disease_name) &&
+                                p.thresholded_percentage !== 'Low'
                             );
-                            const isPositive = abnormality && abnormality.thresholded_percentage !== 'Low';
-                            // Find max score if any positive
+                            const isPositive = positiveAbnormalities.length > 0;
+
+                            // Find max score from positive abnormalities
                             let maxScore = 'Low';
                             if (isPositive) {
-                                const positiveAbnormalities = getCurrentPredictions().filter(p =>
-                                    ['Pleural Effusion', 'Cardiomegaly', 'Atelectasis', 'Edema', 'Nodule', 'Mass', 'Lung Opacity'].includes(p.disease_name) &&
-                                    p.thresholded_percentage !== 'Low'
-                                );
-                                if (positiveAbnormalities.length > 0) {
-                                    let maxVal = 0;
-                                    for (const p of positiveAbnormalities) {
-                                        const val = parseInt(p.thresholded_percentage.replace('%', '')) || 0;
-                                        if (val > maxVal) {
-                                            maxVal = val;
-                                            maxScore = p.thresholded_percentage;
-                                        }
+                                let maxVal = 0;
+                                for (const p of positiveAbnormalities) {
+                                    const val = parseInt(p.thresholded_percentage.replace('%', '')) || 0;
+                                    if (val > maxVal) {
+                                        maxVal = val;
+                                        maxScore = p.thresholded_percentage;
                                     }
                                 }
                             }
@@ -284,10 +322,16 @@ export function CasePreviewPage() {
                                 p.thresholded_percentage !== 'Low'
                             );
                             const isPositive = !!tb;
+                            const isClickable = isPositive && getClickableDiseases().has('Tuberculosis');
+                            const isSelected = selectedDisease === 'Tuberculosis';
                             return (
                                 <div
-                                    className="score-bar"
-                                    style={{ background: isPositive ? 'var(--color-error)' : 'var(--color-success)' }}
+                                    className={`score-bar ${isClickable ? 'clickable' : ''} ${isSelected ? 'selected' : ''}`}
+                                    style={{
+                                        background: isPositive ? 'var(--color-error)' : 'var(--color-success)',
+                                        cursor: isClickable ? 'pointer' : 'default'
+                                    }}
+                                    onClick={() => isClickable && handleDiseaseClick('Tuberculosis', isPositive)}
                                 >
                                     Tuberculosis {isPositive ? tb!.thresholded_percentage : 'Low'}
                                 </div>
@@ -298,10 +342,16 @@ export function CasePreviewPage() {
                         {(() => {
                             const pneumo = getCurrentPredictions().find(p => p.disease_name === 'Pneumothorax');
                             const isPositive = pneumo && pneumo.thresholded_percentage !== 'Low';
+                            const isClickable = isPositive && getClickableDiseases().has('Pneumothorax');
+                            const isSelected = selectedDisease === 'Pneumothorax';
                             return (
                                 <div
-                                    className="score-bar"
-                                    style={{ background: isPositive ? 'var(--color-error)' : 'var(--color-success)' }}
+                                    className={`score-bar ${isClickable ? 'clickable' : ''} ${isSelected ? 'selected' : ''}`}
+                                    style={{
+                                        background: isPositive ? 'var(--color-error)' : 'var(--color-success)',
+                                        cursor: isClickable ? 'pointer' : 'default'
+                                    }}
+                                    onClick={() => isClickable && handleDiseaseClick('Pneumothorax', isPositive)}
                                 >
                                     Pneumothorax {isPositive ? pneumo!.thresholded_percentage : 'Low'}
                                 </div>
@@ -317,27 +367,50 @@ export function CasePreviewPage() {
                         {getCurrentPredictions()
                             .filter(p => !['Abnormality', 'Tuberculosis', 'Pneumothorax', 'Inspectra Lung Opacity v2'].includes(p.disease_name))
                             .sort((a, b) => a.disease_name.localeCompare(b.disease_name))
-                            .map((pred) => (
-                                <div key={pred.disease_name} className="condition-row">
-                                    <span
-                                        className="condition-name"
-                                        style={{
-                                            fontWeight: pred.thresholded_percentage !== 'Low' ? 600 : 400,
-                                            color: pred.thresholded_percentage !== 'Low'
-                                                ? 'var(--color-text-primary)'
-                                                : 'var(--color-text-muted)'
-                                        }}
+                            .map((pred) => {
+                                const isPositive = pred.thresholded_percentage !== 'Low';
+                                const isClickable = isPositive && getClickableDiseases().has(pred.disease_name);
+                                const isSelected = selectedDisease === pred.disease_name;
+
+                                return (
+                                    <div
+                                        key={pred.disease_name}
+                                        className={`condition-row ${isClickable ? 'clickable' : ''} ${isSelected ? 'selected' : ''}`}
+                                        onClick={() => isClickable && handleDiseaseClick(pred.disease_name, isPositive)}
+                                        style={{ cursor: isClickable ? 'pointer' : 'default' }}
                                     >
-                                        {pred.disease_name}
-                                    </span>
-                                    <span
-                                        className="condition-score"
-                                        style={{ color: getScoreColor(pred.thresholded_percentage) }}
-                                    >
-                                        {pred.thresholded_percentage}
-                                    </span>
-                                </div>
-                            ))}
+                                        <span
+                                            className="condition-name"
+                                            style={{
+                                                fontWeight: isPositive ? 600 : 400,
+                                                color: isSelected
+                                                    ? 'var(--color-primary)'
+                                                    : isPositive
+                                                        ? 'var(--color-text-primary)'
+                                                        : 'var(--color-text-muted)'
+                                            }}
+                                        >
+                                            {pred.disease_name}
+                                        </span>
+                                        <span
+                                            className="condition-score"
+                                            style={{ color: getScoreColor(pred.thresholded_percentage) }}
+                                        >
+                                            {pred.thresholded_percentage}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+
+                        {/* Reset button when a disease is selected */}
+                        {selectedDisease && (
+                            <button
+                                className="reset-heatmap-btn"
+                                onClick={handleResetHeatmap}
+                            >
+                                ↻ Reset to Combined View
+                            </button>
+                        )}
                     </div>
 
                     <div className="disclaimer">
