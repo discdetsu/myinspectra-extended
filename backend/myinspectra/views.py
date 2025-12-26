@@ -919,3 +919,94 @@ def api_upload(request):
     except Exception as e:
         logger.exception("Error processing upload")
         return JsonResponse({'error': str(e)}, status=500)
+
+
+# =============================================================================
+# V5 Experimental API (No DB persistence)
+# =============================================================================
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_v5_predict(request):
+    """
+    POST /api/v5/predict/
+    Call v5 API for a case without saving to DB.
+    Request body: { "request_id": "uuid" }
+    Returns: { predictions: [...], overlay_image: "data:image/png;base64,..." }
+    """
+    try:
+        # Parse request body
+        try:
+            body = json.loads(request.body)
+            request_id = body.get('request_id')
+        except json.JSONDecodeError:
+            return api_error_response('Invalid JSON body')
+        
+        if not request_id:
+            return api_error_response('request_id is required')
+        
+        # Get the case and raw image
+        try:
+            case = CaseRequest.objects.get(request_id=request_id)
+        except CaseRequest.DoesNotExist:
+            return api_error_response('Case not found', status=404)
+        
+        raw_image = RawImage.objects.filter(case_request=case).first()
+        if not raw_image or not raw_image.image:
+            return api_error_response('No raw image found for this case', status=404)
+        
+        # Read image data
+        try:
+            raw_image.image.seek(0)
+            file_data = raw_image.image.read()
+            content_type = raw_image.content_type or 'image/png'
+            filename = raw_image.original_filename or 'image.png'
+        except Exception as e:
+            logger.error(f"Error reading raw image: {e}")
+            return api_error_response('Failed to read image data', status=500)
+        
+        # Get v5 API URL from environment
+        v5_url = os.environ.get('ABNORMALITY_V5_URL')
+        if not v5_url:
+            return api_error_response('V5 API not configured', status=500)
+        
+        # Call v5 API
+        logger.info(f"Calling v5 API: {v5_url} for case {request_id}")
+        try:
+            files = {'file': (filename, file_data, content_type)}
+            data = {'request_id': str(request_id)}
+            response = requests.post(v5_url, files=files, data=data, timeout=60)
+            response.raise_for_status()
+            v5_result = response.json()
+        except requests.exceptions.Timeout:
+            return api_error_response('V5 API request timed out', status=504)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"V5 API error: {e}")
+            return api_error_response(f'V5 API error: {str(e)}', status=502)
+        
+        # Transform v5 response to frontend format
+        # V5 response: { "result": { "Disease": { "prediction": float, "balanced_score": float, "thresholded": str }, ... }, "overlay_heatmap_image": "<base64>" }
+        predictions = []
+        result_data = v5_result.get('result', {})
+        for disease_name, values in result_data.items():
+            predictions.append({
+                'disease_name': disease_name,
+                'prediction_value': values.get('prediction', 0.0),
+                'balanced_score': values.get('balanced_score', 0.0),
+                'thresholded_percentage': values.get('thresholded', 'Low'),
+            })
+        
+        # Get base64 overlay image
+        overlay_b64 = v5_result.get('overlay_heatmap_image', '')
+        overlay_image_url = f"data:image/png;base64,{overlay_b64}" if overlay_b64 else None
+        
+        return JsonResponse({
+            'request_id': str(request_id),
+            'api_version': v5_result.get('api_version', '5.0.0'),
+            'predictions': predictions,
+            'overlay_image': overlay_image_url,
+        })
+        
+    except Exception as e:
+        logger.exception("Error in v5 prediction")
+        return JsonResponse({'error': str(e)}, status=500)

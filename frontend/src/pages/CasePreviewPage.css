@@ -388,3 +388,52 @@
 .export-pdf-btn .spinner {
     border-width: 2px;
 }
+
+/* V5 Experimental Styles */
+.version-btn.experimental {
+    background: linear-gradient(135deg, var(--color-bg-tertiary) 0%, rgba(255, 193, 7, 0.1) 100%);
+    border-color: rgba(255, 193, 7, 0.5);
+    color: var(--color-text-primary);
+}
+
+.version-btn.experimental:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(255, 193, 7, 0.15) 0%, rgba(255, 193, 7, 0.25) 100%);
+    border-color: rgba(255, 193, 7, 0.7);
+}
+
+.version-btn.experimental.active {
+    background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+    border-color: #ffc107;
+    color: #000;
+}
+
+.v5-loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+    color: white;
+    font-size: var(--font-size-md);
+    z-index: 10;
+}
+
+.v5-error-overlay {
+    position: absolute;
+    bottom: var(--space-md);
+    left: var(--space-md);
+    right: var(--space-md);
+    background: rgba(239, 68, 68, 0.95);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    color: white;
+    text-align: center;
+    font-size: var(--font-size-sm);
+    z-index: 10;
+}

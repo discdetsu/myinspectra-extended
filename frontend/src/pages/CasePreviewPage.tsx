@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchCaseDetail } from '../services/api';
+import { fetchCaseDetail, predictWithV5 } from '../services/api';
 import { generatePdfReport, revokePdfUrl } from '../utils/pdfExport';
 import { PdfPreviewModal } from '../components/PdfPreviewModal';
-import type { CaseDetail, Prediction } from '../types';
+import type { CaseDetail, Prediction, V5Result } from '../types';
 import './CasePreviewPage.css';
 
-type HeatmapVersion = 'raw' | 'v3.5.1' | 'v4.5.0';
+type HeatmapVersion = 'raw' | 'v3.5.1' | 'v4.5.0' | 'v5';
 
 function getScoreColor(score: string): string {
     // Green only for 'Low', red for everything over threshold
@@ -21,6 +21,11 @@ export function CasePreviewPage() {
     const [error, setError] = useState<string | null>(null);
     const [selectedVersion, setSelectedVersion] = useState<HeatmapVersion>('v4.5.0');
     const [selectedDisease, setSelectedDisease] = useState<string | null>(null);
+
+    // V5 Experimental state
+    const [v5Data, setV5Data] = useState<V5Result | null>(null);
+    const [isLoadingV5, setIsLoadingV5] = useState(false);
+    const [v5Error, setV5Error] = useState<string | null>(null);
 
     // PDF export state
     const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
@@ -58,6 +63,26 @@ export function CasePreviewPage() {
     useEffect(() => {
         setSelectedDisease(null);
     }, [selectedVersion]);
+
+    // Load v5 data on-demand when v5 version is selected
+    useEffect(() => {
+        if (selectedVersion !== 'v5' || !requestId || v5Data) return;
+
+        const loadV5 = async () => {
+            setIsLoadingV5(true);
+            setV5Error(null);
+            try {
+                const data = await predictWithV5(requestId);
+                setV5Data(data);
+            } catch (err) {
+                setV5Error(err instanceof Error ? err.message : 'V5 prediction failed');
+            } finally {
+                setIsLoadingV5(false);
+            }
+        };
+
+        loadV5();
+    }, [selectedVersion, requestId, v5Data]);
 
     // Zoom controls
     const handleZoomIn = useCallback(() => {
@@ -111,20 +136,28 @@ export function CasePreviewPage() {
         if (!caseData) return null;
         if (selectedVersion === 'raw') return caseData.raw_image.url;
 
+        // V5: use base64 overlay from v5Data
+        if (selectedVersion === 'v5') {
+            if (isLoadingV5) return caseData.raw_image.url; // Show raw while loading
+            return v5Data?.overlay_image || caseData.raw_image.url;
+        }
+
         // If a disease is selected, show individual heatmap
         if (selectedDisease && caseData.individual_heatmaps) {
-            const individualHeatmaps = caseData.individual_heatmaps[selectedVersion] || [];
+            const individualHeatmaps = caseData.individual_heatmaps[selectedVersion as 'v3.5.1' | 'v4.5.0'] || [];
             const match = individualHeatmaps.find(h => h.disease_name === selectedDisease);
             if (match?.url) return match.url;
         }
 
-        return caseData.overlays[selectedVersion]?.url || caseData.raw_image.url;
+        return caseData.overlays[selectedVersion as 'v3.5.1' | 'v4.5.0']?.url || caseData.raw_image.url;
     };
 
     // Get list of diseases that have individual heatmaps available
     const getClickableDiseases = (): Set<string> => {
         if (!caseData?.individual_heatmaps) return new Set();
-        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+        // V5 doesn't have individual heatmaps
+        if (selectedVersion === 'v5') return new Set();
+        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion as 'v3.5.1' | 'v4.5.0';
         const heatmaps = caseData.individual_heatmaps[version] || [];
         return new Set(heatmaps.map(h => h.disease_name));
     };
@@ -150,8 +183,12 @@ export function CasePreviewPage() {
 
     const getCurrentPredictions = (): Prediction[] => {
         if (!caseData) return [];
+        // V5: use predictions from v5Data
+        if (selectedVersion === 'v5') {
+            return v5Data?.predictions || [];
+        }
         // For 'raw' view, show v4.5.0 predictions; otherwise show for selected version
-        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+        const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion as 'v3.5.1' | 'v4.5.0';
         return caseData.predictions[version] || [];
     };
 
@@ -166,7 +203,8 @@ export function CasePreviewPage() {
                 revokePdfUrl(pdfUrl);
             }
 
-            const version = selectedVersion === 'raw' ? 'v4.5.0' : selectedVersion;
+            // V5 is experimental, use v4 for PDF export if v5 selected
+            const version: 'v3.5.1' | 'v4.5.0' = (selectedVersion === 'raw' || selectedVersion === 'v5') ? 'v4.5.0' : selectedVersion;
             const predictions = caseData.predictions[version] || [];
 
             const result = await generatePdfReport({
@@ -250,6 +288,12 @@ export function CasePreviewPage() {
                             >
                                 v4.5.0
                             </button>
+                            <button
+                                className={`version-btn experimental ${selectedVersion === 'v5' ? 'active' : ''}`}
+                                onClick={() => setSelectedVersion('v5')}
+                            >
+                                {isLoadingV5 ? '...' : 'v5 (Experimental)'}
+                            </button>
                         </div>
 
                         <button className="nav-btn">›</button>
@@ -273,6 +317,19 @@ export function CasePreviewPage() {
                                 transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
                             }}
                         />
+                        {/* V5 loading overlay */}
+                        {selectedVersion === 'v5' && isLoadingV5 && (
+                            <div className="v5-loading-overlay">
+                                <div className="spinner" />
+                                <span>Processing v5 (Experimental)...</span>
+                            </div>
+                        )}
+                        {/* V5 error display */}
+                        {selectedVersion === 'v5' && v5Error && (
+                            <div className="v5-error-overlay">
+                                <span>⚠️ {v5Error}</span>
+                            </div>
+                        )}
                     </div>
                 </div>
 

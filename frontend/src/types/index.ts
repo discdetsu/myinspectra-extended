@@ -84,3 +84,11 @@ export interface UploadResponse {
     success: boolean;
     errors: string[] | null;
 }
+
+// V5 Experimental API response (on-demand, no DB persistence)
+export interface V5Result {
+    request_id: string;
+    api_version: string;
+    predictions: Prediction[];
+    overlay_image: string | null; // data:image/png;base64,...
+}

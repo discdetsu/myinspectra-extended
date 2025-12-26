@@ -77,6 +77,9 @@ services:
       - LUNG_SEG_URL=${LUNG_SEG_URL}
       - PNEUMOTHORAX_SEG_VERSION=${PNEUMOTHORAX_SEG_VERSION}
       - PNEUMOTHORAX_SEG_URL=${PNEUMOTHORAX_SEG_URL}
+      # Experimental
+      - ABNORMALITY_V5_VERSION=${ABNORMALITY_V5_VERSION}
+      - ABNORMALITY_V5_URL=${ABNORMALITY_V5_URL}
     # Volume mount disabled for production (overwrites container's .venv)
     # Uncomment for development: 
     # volumes:
@@ -103,6 +106,19 @@ services:
       - "${ABNORMALITY_V4_PORT}:${ABNORMALITY_V4_PORT}"
     environment:
       - PORT=${ABNORMALITY_V4_PORT}
+      - HOST=0.0.0.0
+    restart: always
+    networks:
+      - backend
+
+  abnormality_v5:
+    image: abnormality:5.0.0
+    container_name: abnormality_v5
+    build: ./deeplearning_api/abnormality_v5.0.0
+    ports:
+      - "${ABNORMALITY_V5_PORT}:${ABNORMALITY_V5_PORT}"
+    environment:
+      - PORT=${ABNORMALITY_V5_PORT}
       - HOST=0.0.0.0
     restart: always
     networks:
